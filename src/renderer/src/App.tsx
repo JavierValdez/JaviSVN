@@ -46,7 +46,7 @@ declare global {
 }
 
 interface Toast { id: number; message: string; type: 'success' | 'error' | 'info' }
-const DEFAULT_SERVER_URL = 'REMOVED_SERVER_URL'
+const DEFAULT_SERVER_URL = ''
 
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null)

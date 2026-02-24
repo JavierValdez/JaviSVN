@@ -98,7 +98,7 @@ export default function ExplorerView({
   onRequestCredentials,
   toast
 }: Props) {
-  const [serverUrl, setServerUrl] = useState('REMOVED_SERVER_URL')
+  const [serverUrl, setServerUrl] = useState('')
   const [tree, setTree] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -153,7 +153,12 @@ export default function ExplorerView({
   useEffect(() => {
     if (!activeRemote?.url) return
     setServerUrl(activeRemote.url)
-  }, [activeRemote?.id, activeRemote?.url])
+    setTree([])
+    setExpandedUrls(new Set())
+    setChildrenCache({})
+    setLoadingChildrenUrls(new Set())
+    setError(null)
+  }, [activeRemote?.id])
 
   const saveServerUrl = async (): Promise<boolean> => {
     const nextUrl = serverUrl.trim()

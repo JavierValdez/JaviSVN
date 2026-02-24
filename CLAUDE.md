@@ -11,7 +11,7 @@ Guía de referencia para el agente Claude Code al trabajar en este proyecto.
 - **Stack**: Electron 32 + electron-vite 5 + React 18 + TypeScript (ESM)
 - **Backend SVN**: CLI de Subversion (`/opt/homebrew/bin/svn`) invocado via `child_process.spawn`
 - **Comunicación**: IPC Electron (`ipcMain.handle` / `ipcRenderer.invoke` vía `contextBridge`)
-- **Servidor SVN objetivo**: `REMOVED_SERVER_URL/` (red interna, puede no estar accesible fuera)
+- **Servidor SVN objetivo**: configurado por el usuario al iniciar la app (red interna, no hardcodeado en el código)
 - **Repos locales**: `~/Documents/JaviSvn/`
 - **Configuración**: `~/Library/Application Support/javisvn/javisvn-config.json` (store JSON simple)
 

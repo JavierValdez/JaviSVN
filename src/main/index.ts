@@ -11,7 +11,7 @@ const xml2js = _require('xml2js') as any
 const parseStringPromise = xml2js.parseStringPromise
 
 const isDev = process.env.NODE_ENV === 'development'
-const DEFAULT_SERVER_URL = 'REMOVED_SERVER_URL'
+const DEFAULT_SERVER_URL = ''
 const DEFAULT_SVN_CANDIDATES = [
   '/opt/homebrew/bin/svn',
   '/usr/local/bin/svn',

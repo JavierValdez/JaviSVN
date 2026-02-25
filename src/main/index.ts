@@ -11,6 +11,9 @@ const xml2js = _require('xml2js') as any
 const parseStringPromise = xml2js.parseStringPromise
 
 const isDev = process.env.NODE_ENV === 'development'
+
+// Set app name before ready so it shows correctly in the dock and menu bar
+app.name = 'JaviSVN'
 const DEFAULT_SERVER_URL = ''
 const DEFAULT_SVN_CANDIDATES = [
   '/opt/homebrew/bin/svn',
@@ -343,6 +346,13 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   if (process.platform === 'win32') app.setAppUserModelId('com.javisvn.app')
+
+  // Set dock icon in dev mode (in production the .icns in the bundle is used automatically)
+  if (isDev && process.platform === 'darwin' && app.dock) {
+    const iconPath = join(app.getAppPath(), 'ico.png')
+    if (existsSync(iconPath)) app.dock.setIcon(iconPath)
+  }
+
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

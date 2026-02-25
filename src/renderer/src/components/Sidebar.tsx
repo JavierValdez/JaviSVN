@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { EditorId, EditorOption, LocalRepo, RemoteServer } from '../types/svn'
+import appIcon from '../assets/icon.png'
 
 interface Props {
   repos: LocalRepo[]
@@ -61,7 +62,7 @@ export default function Sidebar({
     <div className="sidebar">
       {/* Logo */}
       <div className="sidebar-header">
-        <div className="sidebar-logo">S</div>
+        <img src={appIcon} alt="JaviSVN" className="sidebar-logo" />
         <div className="sidebar-appname">JaviSVN</div>
       </div>
 

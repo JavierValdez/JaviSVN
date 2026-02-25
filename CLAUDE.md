@@ -155,6 +155,64 @@ Eventos push (main → renderer via `webContents.send`):
 
 ---
 
+## Proceso de release
+
+### Pasos para generar una nueva versión y release en GitHub
+
+```bash
+# 1. Bump de versión en package.json (campo "version")
+#    Seguir semver: MAJOR.MINOR.PATCH
+#    Ejemplo: 1.1.0 → 1.2.0
+
+# 2. Commit y push de los cambios
+git add src/ package.json package-lock.json resources/LEER_ANTES_DE_ABRIR.txt
+git commit -m "vX.Y.Z — Descripción breve de cambios"
+git push origin main
+
+# 3. Compilar el instalador .dmg
+npm run dist
+# Genera: dist/JaviSVN-X.Y.Z-arm64.dmg (~99 MB)
+
+# 4. Crear release en GitHub con el .dmg adjunto
+gh release create vX.Y.Z \
+  "dist/JaviSVN-X.Y.Z-arm64.dmg" \
+  --title "JaviSVN vX.Y.Z" \
+  --notes "$(cat <<'EOF'
+## Novedades
+- Cambio 1
+- Cambio 2
+
+## Instalación
+1. Descargar `JaviSVN-X.Y.Z-arm64.dmg`
+2. Leer `LEER_ANTES_DE_ABRIR.txt` dentro del instalador
+3. Arrastrar JaviSVN a la carpeta Aplicaciones
+4. Si macOS bloquea la app: `xattr -cr /Applications/JaviSVN.app`
+EOF
+)"
+```
+
+### Contenido del DMG (configurado en package.json → `build.dmg`)
+
+El instalador `.dmg` incluye tres elementos en su ventana:
+- **JaviSVN.app** (x:130, y:220) — la aplicación
+- **Acceso directo a /Applications** (x:410, y:220) — para arrastrar e instalar
+- **LEER_ANTES_DE_ABRIR.txt** (x:130, y:360) — instrucciones de instalación visibles antes de instalar
+
+El `.txt` también se copia dentro del bundle en `extraResources` para que esté disponible en `Resources/LEER_ANTES_DE_ABRIR.txt` una vez instalada la app.
+
+### Archivos a NO incluir en git (ya en .gitignore)
+- `resources/bin/` — binarios SVN empaquetados (svn, libsvn, etc.)
+- `resources/lib/` — librerías dinámicas de SVN
+- `dist/` — output del build
+
+### Archivos que SÍ deben incluirse en git antes del release
+- `resources/LEER_ANTES_DE_ABRIR.txt` — instrucciones macOS
+- `src/main/updater.ts` — módulo de auto-actualización
+- `src/renderer/src/components/BlameView.tsx` — vista blame
+- `src/renderer/src/components/ConflictResolver.tsx` — resolución de conflictos
+
+---
+
 ## Notas de desarrollo
 
 - No hay branches SVN. El servidor solo usa trunk/main.

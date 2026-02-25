@@ -1,6 +1,6 @@
 {
   "name": "javisvn",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "SVN Desktop Client - Cliente SVN estilo GitHub Desktop",
   "type": "module",
   "main": "./out/main/index.js",

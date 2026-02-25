@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Credentials, LogEntry, RemoteEntry, RemoteSearchResult, RemoteServer } from '../types/svn'
+import DiffViewer from './DiffViewer'
 
 interface Props {
   credentials: Credentials | null
@@ -18,6 +19,16 @@ interface CheckoutState {
   done: boolean
 }
 
+interface ExportState {
+  url: string
+  targetDir: string
+  name: string
+  running: boolean
+  log: string
+  done: boolean
+  resultPath: string
+}
+
 interface RemoteLogState {
   open: boolean
   url: string
@@ -25,6 +36,7 @@ interface RemoteLogState {
   loading: boolean
   entries: LogEntry[]
   selected: LogEntry | null
+  repoRoot: string | null
 }
 
 interface RemoteSearchDialogState {
@@ -49,6 +61,29 @@ interface CreateRemoteState {
   content: string
   running: boolean
 }
+
+interface FileViewerState {
+  open: boolean
+  url: string
+  name: string
+  content: string | null
+  loading: boolean
+  error: string | null
+}
+
+interface RemoteFileDiffState {
+  svnPath: string
+  fileName: string
+  diff: string | null
+  loading: boolean
+}
+
+const BINARY_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg',
+  'pdf', 'zip', 'jar', 'war', 'tar', 'gz', 'rar', '7z',
+  'exe', 'dll', 'so', 'dylib', 'class',
+  'mp3', 'mp4', 'avi', 'mov', 'wav', 'flac'
+])
 
 const ACTION_LABEL: Record<string, string> = {
   M: '✏️',
@@ -157,18 +192,24 @@ export default function ExplorerView({
   const [childrenCache, setChildrenCache] = useState<Record<string, RemoteEntry[]>>({})
   const [loadingChildrenUrls, setLoadingChildrenUrls] = useState<Set<string>>(new Set())
   const [checkout, setCheckout] = useState<CheckoutState | null>(null)
+  const [svnExportDialog, setSvnExportDialog] = useState<ExportState | null>(null)
   const [remoteLog, setRemoteLog] = useState<RemoteLogState>({
     open: false,
     url: '',
     title: '',
     loading: false,
     entries: [],
-    selected: null
+    selected: null,
+    repoRoot: null
   })
   const [createRemote, setCreateRemote] = useState<CreateRemoteState | null>(null)
   const [saveRemoteDialog, setSaveRemoteDialog] = useState<{ url: string; name: string } | null>(null)
   const [openEntryMenuUrl, setOpenEntryMenuUrl] = useState<string | null>(null)
   const treeMenuRef = useRef<HTMLDivElement | null>(null)
+  const [fileViewer, setFileViewer] = useState<FileViewerState>({
+    open: false, url: '', name: '', content: null, loading: false, error: null
+  })
+  const [remoteFileDiff, setRemoteFileDiff] = useState<RemoteFileDiffState | null>(null)
 
   // Per-server navigation state cache
   interface ServerNavState {
@@ -427,6 +468,41 @@ export default function ExplorerView({
     }
   }
 
+  const startExport = (entry: RemoteEntry) => {
+    const nameParts = entry.url.split('/')
+    const defaultName = nameParts[nameParts.length - 1].replace(/\/$/, '') || 'exportacion'
+    setSvnExportDialog({ url: entry.url, targetDir: '', name: defaultName, running: false, log: '', done: false, resultPath: '' })
+  }
+
+  const pickExportFolder = async () => {
+    const svn = getSvnApi()
+    const dir = await svn.pickExportFolder()
+    if (dir) setSvnExportDialog((prev) => prev ? { ...prev, targetDir: dir } : null)
+  }
+
+  const doExport = async () => {
+    if (!svnExportDialog) return
+    if (!svnExportDialog.targetDir) { toast('Selecciona una carpeta de destino', 'error'); return }
+    if (!svnExportDialog.name.trim()) { toast('Escribe un nombre para la carpeta', 'error'); return }
+    const targetPath = `${svnExportDialog.targetDir}/${svnExportDialog.name.trim()}`
+    setSvnExportDialog((prev) => prev ? { ...prev, running: true, log: '', resultPath: targetPath } : null)
+    let unsub = () => {}
+    try {
+      const svn = getSvnApi()
+      unsub = svn.onExportProgress((msg: string) => {
+        setSvnExportDialog((prev) => prev ? { ...prev, log: prev.log + msg } : null)
+      })
+      await svn.svnExport(svnExportDialog.url, targetPath)
+      setSvnExportDialog((prev) => prev ? { ...prev, running: false, done: true } : null)
+      toast('Exportación completada correctamente', 'success')
+    } catch (err: any) {
+      setSvnExportDialog((prev) => prev ? { ...prev, running: false } : null)
+      toast(normalizeError(err) || 'Error al exportar', 'error')
+    } finally {
+      unsub()
+    }
+  }
+
   const openRemoteLog = async (entry: RemoteEntry) => {
     const title = entry.name.replace(/\/$/, '') || entry.url
     setRemoteLog({
@@ -435,17 +511,22 @@ export default function ExplorerView({
       title,
       loading: true,
       entries: [],
-      selected: null
+      selected: null,
+      repoRoot: null
     })
 
     try {
       const svn = getSvnApi()
-      const entries = await svn.remoteLog(entry.url, 100)
+      const [entries, repoRoot] = await Promise.all([
+        svn.remoteLog(entry.url, 100),
+        svn.getRepoRoot(entry.url).catch(() => null)
+      ])
       setRemoteLog((prev) => ({
         ...prev,
         loading: false,
         entries,
-        selected: entries.length > 0 ? entries[0] : null
+        selected: entries.length > 0 ? entries[0] : null,
+        repoRoot
       }))
     } catch (err: any) {
       setRemoteLog((prev) => ({ ...prev, loading: false }))
@@ -584,6 +665,36 @@ export default function ExplorerView({
     })
   }
 
+  const openFileViewer = async (entry: RemoteEntry) => {
+    const ext = entry.name.split('.').pop()?.toLowerCase() || ''
+    if (BINARY_EXTENSIONS.has(ext)) {
+      setFileViewer({ open: true, url: entry.url, name: entry.name, content: null, loading: false, error: `No se puede previsualizar archivos binarios (.${ext})` })
+      return
+    }
+    setFileViewer({ open: true, url: entry.url, name: entry.name, content: null, loading: true, error: null })
+    try {
+      const svn = getSvnApi()
+      const content = await svn.remoteFileContent(entry.url)
+      setFileViewer(prev => ({ ...prev, content, loading: false }))
+    } catch (err: any) {
+      setFileViewer(prev => ({ ...prev, loading: false, error: normalizeError(err) || 'Error al obtener el archivo' }))
+    }
+  }
+
+  const openRemoteFileDiff = async (svnPath: string, revision: number) => {
+    const parts = svnPath.split('/')
+    const fileName = parts[parts.length - 1] || svnPath
+    setRemoteFileDiff({ svnPath, fileName, diff: null, loading: true })
+    try {
+      const svn = getSvnApi()
+      const diff = await svn.remoteRevisionDiff(remoteLog.url, svnPath, revision)
+      setRemoteFileDiff({ svnPath, fileName, diff, loading: false })
+    } catch (err: any) {
+      toast(normalizeError(err) || 'Error al obtener el diff', 'error')
+      setRemoteFileDiff(null)
+    }
+  }
+
   const renderEntry = (entry: RemoteEntry, depth = 0) => {
     const isDir = entry.kind === 'dir'
     const isExpanded = expandedUrls.has(entry.url)
@@ -627,8 +738,8 @@ export default function ExplorerView({
           {/* Icon */}
           <span
             className="tree-item-icon"
-            onClick={() => toggleExpand(entry)}
-            style={{ cursor: isDir ? (isLoadingChildren ? 'wait' : 'pointer') : 'default' }}
+            onClick={() => isDir ? toggleExpand(entry) : openFileViewer(entry)}
+            style={{ cursor: isLoadingChildren ? 'wait' : 'pointer' }}
           >
             {isDir ? (isExpanded ? '📂' : '📁') : getFileIcon(entry.name)}
           </span>
@@ -636,8 +747,8 @@ export default function ExplorerView({
           {/* Body: name + subtitle */}
           <div
             className="tree-item-body"
-            onClick={() => toggleExpand(entry)}
-            style={{ cursor: isDir ? (isLoadingChildren ? 'wait' : 'pointer') : 'default' }}
+            onClick={() => isDir ? toggleExpand(entry) : openFileViewer(entry)}
+            style={{ cursor: isLoadingChildren ? 'wait' : 'pointer' }}
           >
             <span className="tree-item-name">{entry.name.replace(/\/$/, '')}</span>
             {(entry.author || entry.date) && (
@@ -681,6 +792,54 @@ export default function ExplorerView({
                 >
                   🕘 Ver log
                 </button>
+                <button
+                  className="tree-dropdown-item"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setOpenEntryMenuUrl(null)
+                    navigator.clipboard.writeText(entry.url)
+                    toast('URL copiada', 'success')
+                  }}
+                >
+                  📋 Copiar URL
+                </button>
+                <button
+                  className="tree-dropdown-item"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setOpenEntryMenuUrl(null)
+                    navigator.clipboard.writeText(String(entry.revision))
+                    toast('Revisión copiada', 'success')
+                  }}
+                >
+                  📋 Copiar revisión (r{entry.revision})
+                </button>
+                <button
+                  className="tree-dropdown-item"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setOpenEntryMenuUrl(null)
+                    navigator.clipboard.writeText(`${entry.url}@${entry.revision}`)
+                    toast('URL@revisión copiada', 'success')
+                  }}
+                >
+                  📋 Copiar URL@revisión
+                </button>
+                {!isDir && (
+                  <>
+                    <div className="tree-dropdown-divider" />
+                    <button
+                      className="tree-dropdown-item"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenEntryMenuUrl(null)
+                        openFileViewer(entry)
+                      }}
+                    >
+                      👁 Ver archivo
+                    </button>
+                  </>
+                )}
                 {isDir && (
                   <>
                     <div className="tree-dropdown-divider" />
@@ -693,6 +852,16 @@ export default function ExplorerView({
                       }}
                     >
                       {entry.isCheckedOut ? '🔁 Volver a clonar' : '🧬 Clonar repositorio'}
+                    </button>
+                    <button
+                      className="tree-dropdown-item"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenEntryMenuUrl(null)
+                        startExport(entry)
+                      }}
+                    >
+                      📦 Descargar copia
                     </button>
                     <button
                       className="tree-dropdown-item"
@@ -908,7 +1077,21 @@ export default function ExplorerView({
                       className={`history-item ${remoteLog.selected?.revision === entry.revision ? 'selected' : ''}`}
                       onClick={() => setRemoteLog((prev) => ({ ...prev, selected: entry }))}
                     >
-                      <div className="history-rev">r{entry.revision}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div className="history-rev">r{entry.revision}</div>
+                        <button
+                          className="btn btn-ghost"
+                          style={{ padding: '0 4px', fontSize: 10, lineHeight: 1.4, opacity: 0.55 }}
+                          title="Copiar revisión"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            navigator.clipboard.writeText(String(entry.revision))
+                            toast('Revisión copiada', 'success')
+                          }}
+                        >
+                          📋
+                        </button>
+                      </div>
                       <div className="history-msg">{entry.message || '(sin mensaje)'}</div>
                       <div className="history-meta">
                         {entry.author} · {formatDate(entry.date)}
@@ -921,7 +1104,31 @@ export default function ExplorerView({
               <div className="history-detail">
                 {remoteLog.selected ? (
                   <>
-                    <div className="history-detail-rev">Revisión {remoteLog.selected.revision}</div>
+                    <div className="history-detail-rev" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span>Revisión {remoteLog.selected.revision}</span>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: '1px 7px', fontSize: 11 }}
+                        title="Copiar número de revisión"
+                        onClick={() => {
+                          navigator.clipboard.writeText(String(remoteLog.selected!.revision))
+                          toast('Revisión copiada', 'success')
+                        }}
+                      >
+                        📋 r{remoteLog.selected.revision}
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: '1px 7px', fontSize: 11 }}
+                        title={`Copiar URL@revisión\n${remoteLog.url}@${remoteLog.selected.revision}`}
+                        onClick={() => {
+                          navigator.clipboard.writeText(`${remoteLog.url}@${remoteLog.selected!.revision}`)
+                          toast('URL@revisión copiada', 'success')
+                        }}
+                      >
+                        📋 URL
+                      </button>
+                    </div>
                     <div className="history-detail-author">
                       👤 {remoteLog.selected.author} · 🕐 {formatDate(remoteLog.selected.date)}
                     </div>
@@ -934,12 +1141,38 @@ export default function ExplorerView({
                         <div className="history-paths-title">
                           Cambios ({remoteLog.selected.paths.length})
                         </div>
-                        {remoteLog.selected.paths.map((p, i) => (
-                          <div key={i} className="history-path-item">
-                            <span title={p.action}>{ACTION_LABEL[p.action] || p.action}</span>
-                            <span>{p.path}</span>
-                          </div>
-                        ))}
+                        {remoteLog.selected.paths.map((p, i) => {
+                          const canDiff = p.action !== 'D'
+                          return (
+                            <div
+                              key={i}
+                              className={`history-path-item ${canDiff ? 'history-path-item-clickable' : ''}`}
+                              onClick={() => canDiff && openRemoteFileDiff(p.path, remoteLog.selected!.revision)}
+                              title={canDiff ? 'Ver diff de este archivo' : ''}
+                            >
+                              <span title={p.action}>{ACTION_LABEL[p.action] || p.action}</span>
+                              <span style={{ flex: 1 }}>{p.path}</span>
+                              <button
+                                className="btn btn-ghost"
+                                style={{ padding: '0 5px', fontSize: 10, opacity: 0.6, flexShrink: 0 }}
+                                title={remoteLog.repoRoot
+                                  ? `Copiar URL@revisión\n${remoteLog.repoRoot}${p.path}@${remoteLog.selected!.revision}`
+                                  : `Copiar ruta\n${p.path}`}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  const text = remoteLog.repoRoot
+                                    ? `${remoteLog.repoRoot}${p.path}@${remoteLog.selected!.revision}`
+                                    : p.path
+                                  navigator.clipboard.writeText(text)
+                                  toast(remoteLog.repoRoot ? 'URL@revisión copiada' : 'Ruta copiada', 'success')
+                                }}
+                              >
+                                📋
+                              </button>
+                              {canDiff && <span className="history-path-diff-hint">Ver diff →</span>}
+                            </div>
+                          )
+                        })}
                       </>
                     )}
                   </>
@@ -956,7 +1189,7 @@ export default function ExplorerView({
               <button
                 className="btn btn-default"
                 onClick={() =>
-                  setRemoteLog({ open: false, url: '', title: '', loading: false, entries: [], selected: null })
+                  setRemoteLog({ open: false, url: '', title: '', loading: false, entries: [], selected: null, repoRoot: null })
                 }
               >
                 Cerrar
@@ -1213,6 +1446,193 @@ export default function ExplorerView({
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Export dialog */}
+      {svnExportDialog && (
+        <div className="overlay">
+          <div className="dialog" style={{ width: 480 }}>
+            <div className="dialog-title">
+              {svnExportDialog.done ? '✅ Exportación completada' : '📦 Descargar copia'}
+            </div>
+            <div className="dialog-sub" style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+              {svnExportDialog.url}
+            </div>
+
+            {!svnExportDialog.running && !svnExportDialog.done && (
+              <>
+                <div className="form-field">
+                  <label className="form-label">Carpeta de destino</label>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      className="form-input"
+                      value={svnExportDialog.targetDir}
+                      readOnly
+                      placeholder="Selecciona una carpeta..."
+                      style={{ flex: 1, color: svnExportDialog.targetDir ? undefined : 'var(--text3)' }}
+                    />
+                    <button className="btn btn-default" onClick={pickExportFolder}>
+                      Seleccionar...
+                    </button>
+                  </div>
+                </div>
+                <div className="form-field">
+                  <label className="form-label">Nombre de la carpeta</label>
+                  <input
+                    className="form-input"
+                    value={svnExportDialog.name}
+                    onChange={(e) => setSvnExportDialog((prev) => prev ? { ...prev, name: e.target.value } : null)}
+                    placeholder="nombre-exportacion"
+                    autoFocus
+                  />
+                  {svnExportDialog.targetDir && (
+                    <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
+                      Se guardará en: {svnExportDialog.targetDir}/{svnExportDialog.name}
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
+                    Sin metadatos SVN — copia independiente de archivos
+                  </div>
+                </div>
+              </>
+            )}
+
+            {(svnExportDialog.running || svnExportDialog.done) && (
+              <div className="progress-log" style={{ marginBottom: 12, height: 120 }}>
+                {svnExportDialog.log || 'Iniciando exportación...'}
+              </div>
+            )}
+
+            {svnExportDialog.running && (
+              <div className="progress-bar-wrap">
+                <div className="progress-bar" />
+              </div>
+            )}
+
+            {svnExportDialog.done && svnExportDialog.resultPath && (
+              <div style={{ marginBottom: 12 }}>
+                <button
+                  className="btn btn-default"
+                  style={{ width: '100%' }}
+                  onClick={() => getSvnApi().openFolder(svnExportDialog.resultPath)}
+                >
+                  📁 Abrir en Finder
+                </button>
+              </div>
+            )}
+
+            <div className="dialog-actions">
+              <button
+                className="btn btn-default"
+                onClick={() => setSvnExportDialog(null)}
+                disabled={svnExportDialog.running}
+              >
+                {svnExportDialog.done ? 'Cerrar' : 'Cancelar'}
+              </button>
+              {!svnExportDialog.done && (
+                <button
+                  className="btn btn-primary"
+                  onClick={doExport}
+                  disabled={svnExportDialog.running || !svnExportDialog.targetDir || !svnExportDialog.name.trim()}
+                >
+                  {svnExportDialog.running ? '⟳ Exportando...' : '📦 Exportar'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Remote file diff modal */}
+      {remoteFileDiff && (
+        <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setRemoteFileDiff(null) }}>
+          <div className="dialog" style={{ width: '85vw', maxWidth: 1100, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="dialog-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span>Diff · {remoteFileDiff.fileName}</span>
+              {remoteLog.selected && (
+                <span style={{ fontSize: 11, fontWeight: 400, fontFamily: 'SF Mono, Menlo, monospace', color: 'var(--accent)', background: '#dbeafe', borderRadius: 10, padding: '2px 8px' }}>
+                  r{remoteLog.selected.revision}
+                </span>
+              )}
+              <button
+                className="btn btn-ghost"
+                style={{ marginLeft: 'auto', padding: '2px 8px' }}
+                onClick={() => setRemoteFileDiff(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="dialog-sub" style={{ fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', marginBottom: 8 }}>
+              {remoteFileDiff.svnPath}
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+              {remoteFileDiff.loading ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
+                  <div className="spinner spinner-lg" />
+                </div>
+              ) : remoteFileDiff.diff && remoteFileDiff.diff.includes('@@') ? (
+                <DiffViewer diff={remoteFileDiff.diff} filePath={remoteFileDiff.fileName} />
+              ) : (
+                <div style={{ padding: 24, color: 'var(--text2)', fontSize: 13 }}>
+                  {remoteFileDiff.diff || '(sin cambios)'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* File viewer dialog */}
+      {fileViewer.open && (
+        <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setFileViewer(prev => ({ ...prev, open: false })) }}>
+          <div className="dialog" style={{ width: '85vw', maxWidth: 1000, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="dialog-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span>{getFileIcon(fileViewer.name)} {fileViewer.name}</span>
+              <button
+                className="btn btn-ghost"
+                style={{ marginLeft: 'auto', padding: '2px 8px' }}
+                onClick={() => setFileViewer(prev => ({ ...prev, open: false }))}
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ fontFamily: 'SF Mono, Menlo, monospace', fontSize: 11, color: 'var(--text3)', marginBottom: 8, wordBreak: 'break-all' }}>
+              {fileViewer.url}
+            </div>
+            {fileViewer.loading ? (
+              <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
+                <div className="spinner spinner-lg" />
+              </div>
+            ) : fileViewer.error ? (
+              <div style={{ padding: 20, color: 'var(--danger)', fontSize: 13 }}>{fileViewer.error}</div>
+            ) : (
+              <div style={{ flex: 1, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+                <pre style={{ margin: 0, padding: 16, fontFamily: 'SF Mono, Menlo, monospace', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text)' }}>
+                  {fileViewer.content || '(archivo vacío)'}
+                </pre>
+              </div>
+            )}
+            {!fileViewer.loading && fileViewer.content && (
+              <div className="dialog-actions" style={{ marginTop: 12 }}>
+                <button
+                  className="btn btn-default"
+                  onClick={() => {
+                    navigator.clipboard.writeText(fileViewer.content || '')
+                    toast('Copiado al portapapeles', 'success')
+                  }}
+                >
+                  📋 Copiar
+                </button>
+                <button
+                  className="btn btn-default"
+                  onClick={() => setFileViewer(prev => ({ ...prev, open: false }))}
+                >
+                  Cerrar
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

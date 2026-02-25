@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join } from 'path'
 import { createRequire } from 'module'
 import { spawn, spawnSync } from 'child_process'
@@ -1031,6 +1031,38 @@ ipcMain.handle('svn:checkout', async (_e, url: string, targetName: string) => {
   }
 })
 
+// ─── IPC: SVN Export ─────────────────────────────────────────────────────────
+ipcMain.handle('svn:export', async (_e, url: string, targetPath: string) => {
+  if (existsSync(targetPath)) {
+    throw new Error(`Ya existe una carpeta en "${targetPath}"`)
+  }
+  try {
+    await runSvn(
+      ['export', url, targetPath],
+      {
+        timeoutMs: 10 * 60 * 1000,
+        onData: (chunk) => mainWindow.webContents.send('svn:export-progress', chunk),
+        onErrorData: (chunk) => mainWindow.webContents.send('svn:export-progress', chunk)
+      }
+    )
+    return { success: true, path: targetPath }
+  } catch (err: any) {
+    const msg = String(err?.message || '').trim()
+    throw new Error(msg || 'Error al exportar el repositorio')
+  }
+})
+
+// ─── IPC: Pick export folder ──────────────────────────────────────────────────
+ipcMain.handle('dialog:pickExportFolder', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Seleccionar carpeta de destino',
+    buttonLabel: 'Seleccionar'
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  return result.filePaths[0]
+})
+
 // ─── IPC: SVN Update ─────────────────────────────────────────────────────────
 const SSL_TRANSIENT_RE = /svn:\s+E1[12]\d{4}:.*(?:SSL|Unable to connect|Error running context)/i
 
@@ -1119,6 +1151,7 @@ ipcMain.handle('svn:revisionFileDiff', async (_e, repoPath: string, revision: nu
     const { stdout } = await runSvn([
       'diff',
       `-c${revision}`,
+      '-x', '-U 9999',
       fileUrl
     ])
     return stdout || '(sin cambios en esta revisión)'
@@ -1173,6 +1206,8 @@ ipcMain.handle('svn:log', async (_e, repoPath: string, limit = 50, fromRevision?
   const args = ['log', '--xml', '--verbose', `--limit=${safeLimit}`]
   if (Number.isFinite(safeFromRevision) && safeFromRevision > 0) {
     args.push('-r', `${Math.floor(safeFromRevision)}:1`)
+  } else {
+    args.push('-r', 'HEAD:1')
   }
 
   const { stdout } = await runSvn(args, { cwd: repoPath })
@@ -1197,6 +1232,42 @@ ipcMain.handle('svn:log', async (_e, repoPath: string, limit = 50, fromRevision?
       }))
     }
   })
+})
+
+// ─── IPC: SVN Cat (remote file content) ──────────────────────────────────────
+ipcMain.handle('svn:cat', async (_e, url: string) => {
+  const { stdout } = await runSvn(['cat', url])
+  if (stdout.length > 500_000) {
+    return stdout.slice(0, 500_000) + '\n\n[... contenido truncado a 500 KB ...]'
+  }
+  return stdout
+})
+
+// ─── IPC: SVN Repo Root URL ──────────────────────────────────────────────────
+ipcMain.handle('svn:getRepoRoot', async (_e, url: string) => {
+  const { stdout } = await runSvn(['info', '--xml', url])
+  const parsed = await xml2js.parseStringPromise(stdout, { explicitArray: false })
+  return (parsed?.info?.entry?.repository?.root as string) || null
+})
+
+// ─── IPC: SVN Remote Diff at specific revision ───────────────────────────────
+ipcMain.handle('svn:remoteRevisionDiff', async (_e, baseUrl: string, svnPath: string, revision: number) => {
+  const { stdout: infoXml } = await runSvn(['info', '--xml', baseUrl])
+  const parsed = await xml2js.parseStringPromise(infoXml, { explicitArray: false })
+  const rootUrl: string = parsed?.info?.entry?.repository?.root || ''
+  if (!rootUrl) throw new Error('No se pudo obtener la URL raíz del repositorio')
+
+  const fileUrl = rootUrl + svnPath
+  try {
+    const { stdout } = await runSvn(['diff', `-c${revision}`, '-x', '-U 9999', fileUrl])
+    return stdout || '(sin cambios en esta revisión)'
+  } catch (err: any) {
+    const msg = String(err?.message || '')
+    if (msg.includes('was added') || msg.includes('E195020')) {
+      return `(archivo añadido en r${revision})`
+    }
+    throw err
+  }
 })
 
 // ─── IPC: SVN Info ───────────────────────────────────────────────────────────

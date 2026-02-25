@@ -22,10 +22,16 @@ const svnAPI = {
   searchRemote: (url: string, query: string, deepSearch: boolean) =>
     ipcRenderer.invoke('svn:searchRemote', url, query, deepSearch),
   remoteLog: (url: string, limit?: number) => ipcRenderer.invoke('svn:remoteLog', url, limit),
+  remoteFileContent: (url: string) => ipcRenderer.invoke('svn:cat', url),
+  getRepoRoot: (url: string) => ipcRenderer.invoke('svn:getRepoRoot', url),
+  remoteRevisionDiff: (baseUrl: string, svnPath: string, revision: number) =>
+    ipcRenderer.invoke('svn:remoteRevisionDiff', baseUrl, svnPath, revision),
   remoteMkdir: (parentUrl: string, name: string, message?: string) =>
     ipcRenderer.invoke('svn:remoteMkdir', parentUrl, name, message),
   remoteCreateFile: (parentUrl: string, name: string, content?: string, message?: string) =>
     ipcRenderer.invoke('svn:remoteCreateFile', parentUrl, name, content, message),
+  svnExport: (url: string, targetPath: string) => ipcRenderer.invoke('svn:export', url, targetPath),
+  pickExportFolder: () => ipcRenderer.invoke('dialog:pickExportFolder'),
   ping: (url: string) => ipcRenderer.invoke('svn:ping', url),
   getVersion: () => ipcRenderer.invoke('svn:version'),
   getBinPath: () => ipcRenderer.invoke('svn:getBinPath'),
@@ -88,6 +94,11 @@ const svnAPI = {
     const handler = (_: any, data: any) => cb(data)
     ipcRenderer.on('svn:searchDone', handler)
     return () => ipcRenderer.removeListener('svn:searchDone', handler)
+  },
+  onExportProgress: (cb: (msg: string) => void) => {
+    const handler = (_: any, msg: string) => cb(msg)
+    ipcRenderer.on('svn:export-progress', handler)
+    return () => ipcRenderer.removeListener('svn:export-progress', handler)
   }
 }
 

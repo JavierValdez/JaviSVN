@@ -23,14 +23,8 @@ Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, ha
 ## Requisitos
 
 - macOS (Apple Silicon o Intel)
-- SVN instalado en el sistema:
-  ```bash
-  # Apple Silicon
-  brew install subversion
 
-  # Intel
-  brew install subversion
-  ```
+> SVN viene incluido dentro de la app. No necesitas instalarlo por separado.
 
 ---
 
@@ -78,7 +72,7 @@ Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, ha
 
 - Node.js 20+
 - npm
-- SVN instalado (`/opt/homebrew/bin/svn` o `/usr/local/bin/svn`)
+- SVN instalado en el sistema (`brew install subversion`) — solo necesario para desarrollo y pruebas; el build final empaqueta sus propios binarios
 
 ### Iniciar en modo desarrollo
 

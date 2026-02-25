@@ -144,22 +144,23 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
           </label>
           <div style={{ display: 'flex', gap: 4 }}>
             <button
-              className="btn btn-ghost"
-              style={{ padding: '2px 6px', fontSize: 11 }}
+              className="btn btn-default"
+              style={{ padding: '3px 10px', fontSize: 11 }}
               onClick={onRefresh}
-              title="Recargar estado"
+              disabled={loading}
+              title="Recargar estado de archivos"
             >
-              ⟳
+              ⟳ Actualizar
             </button>
             {checked.size > 0 && (
               <button
                 className="btn btn-ghost"
-                style={{ padding: '2px 6px', fontSize: 11, color: 'var(--danger)' }}
+                style={{ padding: '3px 8px', fontSize: 11, color: 'var(--danger)' }}
                 onClick={() => handleRevert()}
                 disabled={reverting}
                 title="Revertir seleccionados"
               >
-                ↺
+                ↺ Revertir
               </button>
             )}
           </div>

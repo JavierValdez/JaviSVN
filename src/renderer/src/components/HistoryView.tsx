@@ -59,6 +59,7 @@ export default function HistoryView({ repo, toast }: Props) {
   const [hasMore, setHasMore] = useState(false)
   const [selected, setSelected] = useState<LogEntry | null>(null)
   const [fileDiff, setFileDiff] = useState<FileDiffState | null>(null)
+  const [repoInfo, setRepoInfo] = useState<{ url: string; rootUrl: string } | null>(null)
 
   useEffect(() => {
     setFileDiff(null)
@@ -69,10 +70,14 @@ export default function HistoryView({ repo, toast }: Props) {
     setLoading(true)
     setHasMore(false)
     try {
-      const entries = await window.svn.log(repo.path, LOG_PAGE_SIZE)
+      const [entries, info] = await Promise.all([
+        window.svn.log(repo.path, LOG_PAGE_SIZE),
+        window.svn.info(repo.path).catch(() => null)
+      ])
       setLog(entries)
       if (entries.length > 0) setSelected(entries[0])
       else setSelected(null)
+      if (info) setRepoInfo({ url: info.url, rootUrl: info.rootUrl })
 
       const lastRevision = entries.length > 0 ? entries[entries.length - 1].revision : 0
       setHasMore(entries.length === LOG_PAGE_SIZE && lastRevision > 1)
@@ -81,6 +86,11 @@ export default function HistoryView({ repo, toast }: Props) {
     } finally {
       setLoading(false)
     }
+  }
+
+  const copy = (text: string, label: string) => {
+    navigator.clipboard.writeText(text)
+    toast(label, 'success')
   }
 
   const loadMore = async () => {
@@ -133,6 +143,20 @@ export default function HistoryView({ repo, toast }: Props) {
     <div className="history-layout">
       {/* Left: log list */}
       <div className="history-list">
+        <div className="changes-list-header">
+          <span style={{ fontSize: 12, color: 'var(--text2)' }}>
+            {log.length > 0 ? `${log.length} revisiones` : 'Historial'}
+          </span>
+          <button
+            className="btn btn-ghost"
+            style={{ padding: '2px 6px', fontSize: 11 }}
+            onClick={loadLog}
+            disabled={loading}
+            title="Recargar historial"
+          >
+            ⟳
+          </button>
+        </div>
         {loading ? (
           <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}>
             <div className="spinner spinner-lg" />
@@ -160,7 +184,20 @@ export default function HistoryView({ repo, toast }: Props) {
                       <span>{formatDateShort(entry.date)}</span>
                     </div>
                   </div>
-                  <div className="history-rev-badge">r{entry.revision}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <div className="history-rev-badge">r{entry.revision}</div>
+                    <button
+                      className="btn btn-ghost"
+                      style={{ padding: '0 4px', fontSize: 10, opacity: 0.55 }}
+                      title="Copiar revisión"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        copy(String(entry.revision), 'Revisión copiada')
+                      }}
+                    >
+                      📋
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -188,7 +225,37 @@ export default function HistoryView({ repo, toast }: Props) {
                 <div className="history-detail-author">{selected.author}</div>
                 <div className="history-detail-date">{formatDate(selected.date)}</div>
               </div>
-              <div className="history-detail-rev-badge">r{selected.revision}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <div className="history-detail-rev-badge">r{selected.revision}</div>
+                <button
+                  className="btn btn-ghost"
+                  style={{ padding: '1px 7px', fontSize: 11 }}
+                  title="Copiar número de revisión"
+                  onClick={() => copy(String(selected.revision), 'Revisión copiada')}
+                >
+                  📋 r{selected.revision}
+                </button>
+                {repoInfo && (
+                  <>
+                    <button
+                      className="btn btn-ghost"
+                      style={{ padding: '1px 7px', fontSize: 11 }}
+                      title={`Copiar URL del repositorio remoto\n${repoInfo.url}`}
+                      onClick={() => copy(repoInfo.url, 'URL copiada')}
+                    >
+                      📋 URL
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      style={{ padding: '1px 7px', fontSize: 11 }}
+                      title={`Copiar URL@revisión\n${repoInfo.url}@${selected.revision}`}
+                      onClick={() => copy(`${repoInfo.url}@${selected.revision}`, 'URL@revisión copiada')}
+                    >
+                      📋 URL@rev
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Commit message */}
@@ -216,10 +283,23 @@ export default function HistoryView({ repo, toast }: Props) {
                         title={canDiff ? 'Ver diff de este archivo' : ''}
                       >
                         <span className={`history-action-badge ${meta.cls}`}>{meta.label}</span>
-                        <div className="history-path-text">
+                        <div className="history-path-text" style={{ flex: 1 }}>
                           <span className="history-path-file">{file}</span>
                           {dir && <span className="history-path-dir">{dir}</span>}
                         </div>
+                        {repoInfo && (
+                          <button
+                            className="btn btn-ghost"
+                            style={{ padding: '0 5px', fontSize: 10, opacity: 0.6, flexShrink: 0 }}
+                            title={`Copiar URL@revisión\n${repoInfo.rootUrl}${p.path}@${selected.revision}`}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              copy(`${repoInfo.rootUrl}${p.path}@${selected.revision}`, 'URL@revisión copiada')
+                            }}
+                          >
+                            📋
+                          </button>
+                        )}
                         {canDiff && <span className="history-path-diff-hint">Ver diff →</span>}
                       </div>
                     )

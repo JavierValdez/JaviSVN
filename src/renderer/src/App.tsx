@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { ActiveTab, Credentials, EditorId, EditorOption, FileChange, LocalRepo, RemoteServer } from './types/svn'
 import Sidebar from './components/Sidebar'
 import ChangesView from './components/ChangesView'
@@ -26,6 +26,9 @@ declare global {
       onSearchProgress: (cb: (data: { searched: number; total: number; listingStats?: { dirs: number; entries: number } }) => void) => () => void
       onSearchDone: (cb: (data: { searched: number; total: number }) => void) => () => void
       remoteLog: (url: string, limit?: number) => Promise<any[]>
+      remoteFileContent: (url: string) => Promise<string>
+      getRepoRoot: (url: string) => Promise<string | null>
+      remoteRevisionDiff: (baseUrl: string, svnPath: string, revision: number) => Promise<string>
       remoteMkdir: (parentUrl: string, name: string, message?: string) => Promise<any>
       remoteCreateFile: (parentUrl: string, name: string, content?: string, message?: string) => Promise<any>
       ping: (url: string) => Promise<{ ok: boolean; authError?: boolean; message?: string }>
@@ -46,9 +49,12 @@ declare global {
       listEditors: () => Promise<EditorOption[]>
       openInEditor: (editorId: EditorId, repoPath: string) => Promise<void>
       installSvn: () => Promise<{ success: boolean; bin: string }>
+      svnExport: (url: string, targetPath: string) => Promise<{ success: boolean; path: string }>
+      pickExportFolder: () => Promise<string | null>
       onCheckoutProgress: (cb: (msg: string) => void) => () => void
       onUpdateProgress: (cb: (msg: string) => void) => () => void
       onInstallProgress: (cb: (msg: string) => void) => () => void
+      onExportProgress: (cb: (msg: string) => void) => () => void
     }
   }
 }
@@ -143,6 +149,15 @@ export default function App() {
       setLoadingChanges(false)
     }
   }
+
+  // Auto-refresh changes every 15 s while on the changes tab
+  const loadChangesRef = useRef(loadChanges)
+  loadChangesRef.current = loadChanges
+  useEffect(() => {
+    if (!selectedRepo || activeTab !== 'changes') return
+    const id = setInterval(() => loadChangesRef.current(), 15_000)
+    return () => clearInterval(id)
+  }, [selectedRepo?.path, activeTab])
 
   const refreshRepos = async () => {
     const repos = await window.svn.listLocalRepos()

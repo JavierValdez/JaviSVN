@@ -15,9 +15,12 @@ const svnAPI = {
   // Local repos
   listLocalRepos: () => ipcRenderer.invoke('repos:list'),
   getBasePath: () => ipcRenderer.invoke('repos:basePath'),
+  deleteRepo: (repoPath: string) => ipcRenderer.invoke('repos:delete', repoPath),
 
   // Remote SVN
   listRemote: (url: string) => ipcRenderer.invoke('svn:list', url),
+  searchRemote: (url: string, query: string, deepSearch: boolean) =>
+    ipcRenderer.invoke('svn:searchRemote', url, query, deepSearch),
   remoteLog: (url: string, limit?: number) => ipcRenderer.invoke('svn:remoteLog', url, limit),
   remoteMkdir: (parentUrl: string, name: string, message?: string) =>
     ipcRenderer.invoke('svn:remoteMkdir', parentUrl, name, message),
@@ -34,17 +37,23 @@ const svnAPI = {
   update: (repoPath: string) => ipcRenderer.invoke('svn:update', repoPath),
   status: (repoPath: string) => ipcRenderer.invoke('svn:status', repoPath),
   diff: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:diff', repoPath, filePath),
+  revisionFileDiff: (repoPath: string, revision: number, svnPath: string) =>
+    ipcRenderer.invoke('svn:revisionFileDiff', repoPath, revision, svnPath),
   commit: (repoPath: string, files: string[], message: string) =>
     ipcRenderer.invoke('svn:commit', repoPath, files, message),
   revert: (repoPath: string, files: string[]) =>
     ipcRenderer.invoke('svn:revert', repoPath, files),
-  log: (repoPath: string, limit?: number) => ipcRenderer.invoke('svn:log', repoPath, limit),
+  log: (repoPath: string, limit?: number, fromRevision?: number) =>
+    ipcRenderer.invoke('svn:log', repoPath, limit, fromRevision),
   info: (path: string) => ipcRenderer.invoke('svn:info', path),
 
   // Dialog / shell
   openFile: (repoPath: string, filePath: string) =>
     ipcRenderer.invoke('dialog:openFile', repoPath, filePath),
   openFolder: (path: string) => ipcRenderer.invoke('dialog:openFolder', path),
+  listEditors: () => ipcRenderer.invoke('dialog:listEditors'),
+  openInEditor: (editorId: string, repoPath: string) =>
+    ipcRenderer.invoke('dialog:openInEditor', editorId, repoPath),
 
   // Install SVN via Homebrew (fallback when no bundled binary)
   installSvn: () => ipcRenderer.invoke('svn:install'),
@@ -64,6 +73,21 @@ const svnAPI = {
     const handler = (_: any, msg: string) => cb(msg)
     ipcRenderer.on('svn:install-progress', handler)
     return () => ipcRenderer.removeListener('svn:install-progress', handler)
+  },
+  onSearchResult: (cb: (result: any) => void) => {
+    const handler = (_: any, result: any) => cb(result)
+    ipcRenderer.on('svn:searchResult', handler)
+    return () => ipcRenderer.removeListener('svn:searchResult', handler)
+  },
+  onSearchProgress: (cb: (data: { searched: number; total: number }) => void) => {
+    const handler = (_: any, data: any) => cb(data)
+    ipcRenderer.on('svn:searchProgress', handler)
+    return () => ipcRenderer.removeListener('svn:searchProgress', handler)
+  },
+  onSearchDone: (cb: (data: { searched: number; total: number }) => void) => {
+    const handler = (_: any, data: any) => cb(data)
+    ipcRenderer.on('svn:searchDone', handler)
+    return () => ipcRenderer.removeListener('svn:searchDone', handler)
   }
 }
 

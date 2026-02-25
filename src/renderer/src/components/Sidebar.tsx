@@ -1,4 +1,5 @@
-import { LocalRepo, RemoteServer } from '../types/svn'
+import { useState, useEffect, useRef } from 'react'
+import { EditorId, EditorOption, LocalRepo, RemoteServer } from '../types/svn'
 
 interface Props {
   repos: LocalRepo[]
@@ -8,8 +9,12 @@ interface Props {
   activeRemoteId: string | null
   onSelectRepo: (repo: LocalRepo) => void
   onSelectRemote: (remoteId: string) => void
-  onOpenExplorer: () => void
+  onAddRemote: () => void
   onRefresh: () => void
+  onDeleteRepo: (repo: LocalRepo) => void
+  onOpenFolder: (path: string) => void
+  availableEditors: EditorOption[]
+  onOpenInEditor: (editorId: EditorId, path: string) => void
 }
 
 function timeAgo(dateStr: string): string {
@@ -31,9 +36,27 @@ export default function Sidebar({
   activeRemoteId,
   onSelectRepo,
   onSelectRemote,
-  onOpenExplorer,
-  onRefresh
+  onAddRemote,
+  onRefresh,
+  onDeleteRepo,
+  onOpenFolder,
+  availableEditors,
+  onOpenInEditor
 }: Props) {
+  const [openMenuPath, setOpenMenuPath] = useState<string | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!openMenuPath) return
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setOpenMenuPath(null)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [openMenuPath])
+
   return (
     <div className="sidebar">
       {/* Logo */}
@@ -58,14 +81,15 @@ export default function Sidebar({
 
         {repos.length === 0 ? (
           <div style={{ padding: '12px', fontSize: 12, color: 'var(--sidebar-muted)', textAlign: 'center', lineHeight: 1.5 }}>
-            Sin repositorios locales.{'\n'}Explora el servidor para descargar.
+            Sin repositorios locales.{'\n'}Explora el servidor para clonar.
           </div>
         ) : (
           repos.map((repo) => (
             <div
               key={repo.path}
-              className={`sidebar-item ${selectedRepo?.path === repo.path ? 'active' : ''}`}
-              onClick={() => onSelectRepo(repo)}
+              className={`sidebar-item sidebar-item-with-menu ${selectedRepo?.path === repo.path ? 'active' : ''}`}
+              onClick={() => { setOpenMenuPath(null); onSelectRepo(repo) }}
+              style={{ position: 'relative' }}
             >
               <div className="sidebar-item-icon">📁</div>
               <div className="sidebar-item-info">
@@ -74,6 +98,59 @@ export default function Sidebar({
               </div>
               {repo.changesCount > 0 && (
                 <span className="sidebar-badge">{repo.changesCount}</span>
+              )}
+
+              {/* Options button */}
+              <button
+                className="sidebar-item-menu-btn"
+                title="Opciones"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setOpenMenuPath(openMenuPath === repo.path ? null : repo.path)
+                }}
+              >
+                ···
+              </button>
+
+              {/* Dropdown menu */}
+              {openMenuPath === repo.path && (
+                <div className="sidebar-item-dropdown" ref={menuRef}>
+                  {availableEditors.map((editor) => (
+                    <button
+                      key={editor.id}
+                      className="sidebar-dropdown-item"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenMenuPath(null)
+                        onOpenInEditor(editor.id, repo.path)
+                      }}
+                    >
+                      {editor.id === 'vscode-insiders' ? '🧪' : '🟦'} Abrir en {editor.label}
+                    </button>
+                  ))}
+                  {availableEditors.length > 0 && <div className="sidebar-dropdown-divider" />}
+                  <button
+                    className="sidebar-dropdown-item"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setOpenMenuPath(null)
+                      onOpenFolder(repo.path)
+                    }}
+                  >
+                    📂 Abrir en Finder
+                  </button>
+                  <div className="sidebar-dropdown-divider" />
+                  <button
+                    className="sidebar-dropdown-item sidebar-dropdown-item-danger"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setOpenMenuPath(null)
+                      onDeleteRepo(repo)
+                    }}
+                  >
+                    🗑 Eliminar repositorio
+                  </button>
+                </div>
               )}
             </div>
           ))
@@ -103,13 +180,13 @@ export default function Sidebar({
           ))
         )}
         <div
-          className={`sidebar-item ${isExplorerActive && !activeRemoteId ? 'active' : ''}`}
-          onClick={onOpenExplorer}
+          className="sidebar-item"
+          onClick={onAddRemote}
         >
-          <div className="sidebar-item-icon">🔍</div>
+          <div className="sidebar-item-icon">➕</div>
           <div className="sidebar-item-info">
-            <div className="sidebar-item-name">Explorar servidor SVN</div>
-            <div className="sidebar-item-sub">Vista remota</div>
+            <div className="sidebar-item-name">Agregar servidor SVN</div>
+            <div className="sidebar-item-sub">Conectar nueva URL</div>
           </div>
         </div>
       </div>

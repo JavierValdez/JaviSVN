@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ActiveTab, Credentials, FileChange, LocalRepo, RemoteServer } from './types/svn'
+import { ActiveTab, Credentials, EditorId, EditorOption, FileChange, LocalRepo, RemoteServer } from './types/svn'
 import Sidebar from './components/Sidebar'
 import ChangesView from './components/ChangesView'
 import ExplorerView from './components/ExplorerView'
@@ -19,7 +19,12 @@ declare global {
       selectRemote: (remoteId: string) => Promise<RemoteServer>
       listLocalRepos: () => Promise<LocalRepo[]>
       getBasePath: () => Promise<string>
+      deleteRepo: (repoPath: string) => Promise<void>
       listRemote: (url: string) => Promise<any[]>
+      searchRemote: (url: string, query: string, deepSearch: boolean) => Promise<{ ok: boolean }>
+      onSearchResult: (cb: (result: { path: string; name: string; kind: 'dir' | 'file' | 'revision'; matchType: 'name' | 'content' | 'comment'; entryUrl: string; revision?: number; revisionMessage?: string }) => void) => () => void
+      onSearchProgress: (cb: (data: { searched: number; total: number; listingStats?: { dirs: number; entries: number } }) => void) => () => void
+      onSearchDone: (cb: (data: { searched: number; total: number }) => void) => () => void
       remoteLog: (url: string, limit?: number) => Promise<any[]>
       remoteMkdir: (parentUrl: string, name: string, message?: string) => Promise<any>
       remoteCreateFile: (parentUrl: string, name: string, content?: string, message?: string) => Promise<any>
@@ -31,12 +36,15 @@ declare global {
       update: (repoPath: string) => Promise<any>
       status: (repoPath: string) => Promise<FileChange[]>
       diff: (repoPath: string, filePath: string) => Promise<string>
+      revisionFileDiff: (repoPath: string, revision: number, svnPath: string) => Promise<string>
       commit: (repoPath: string, files: string[], message: string) => Promise<any>
       revert: (repoPath: string, files: string[]) => Promise<any>
-      log: (repoPath: string, limit?: number) => Promise<any[]>
+      log: (repoPath: string, limit?: number, fromRevision?: number) => Promise<any[]>
       info: (path: string) => Promise<any>
       openFile: (repoPath: string, filePath: string) => Promise<void>
       openFolder: (path: string) => Promise<void>
+      listEditors: () => Promise<EditorOption[]>
+      openInEditor: (editorId: EditorId, repoPath: string) => Promise<void>
       installSvn: () => Promise<{ success: boolean; bin: string }>
       onCheckoutProgress: (cb: (msg: string) => void) => () => void
       onUpdateProgress: (cb: (msg: string) => void) => () => void
@@ -67,6 +75,11 @@ export default function App() {
   const [svnMissing, setSvnMissing] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [installLog, setInstallLog] = useState('')
+  const [showAddRemoteDialog, setShowAddRemoteDialog] = useState(false)
+  const [addRemoteUrl, setAddRemoteUrl] = useState('')
+  const [addRemoteName, setAddRemoteName] = useState('')
+  const [repoToDelete, setRepoToDelete] = useState<LocalRepo | null>(null)
+  const [availableEditors, setAvailableEditors] = useState<EditorOption[]>([])
 
   const toast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now()
@@ -93,6 +106,13 @@ export default function App() {
         const repos = await window.svn.listLocalRepos()
         setLocalRepos(repos)
         if (repos.length > 0) setSelectedRepo(repos[0])
+
+        try {
+          const editors = await window.svn.listEditors()
+          setAvailableEditors(Array.isArray(editors) ? editors : [])
+        } catch {
+          setAvailableEditors([])
+        }
 
         const ver = await window.svn.getVersion()
         setSvnVersion(ver.version)
@@ -232,6 +252,48 @@ export default function App() {
     }
   }
 
+  const handleAddRemote = async () => {
+    setAddRemoteUrl('')
+    setAddRemoteName('')
+    setShowAddRemoteDialog(true)
+  }
+
+  const handleAddRemoteSubmit = async () => {
+    const url = addRemoteUrl.trim()
+    if (!url) { toast('Ingresa una URL de servidor SVN', 'error'); return }
+    const name = addRemoteName.trim() || url.replace(/^https?:\/\//, '').replace(/\/$/, '').split('/').slice(-2).join('/') || 'Servidor SVN'
+    try {
+      await handleSaveRemote(name, url)
+      setShowAddRemoteDialog(false)
+    } catch (err: any) {
+      toast(err.message || 'Error al guardar el servidor', 'error')
+    }
+  }
+
+  const handleDeleteRepo = (repo: LocalRepo) => setRepoToDelete(repo)
+
+  const handleOpenInEditor = async (editorId: EditorId, repoPath: string) => {
+    try {
+      await window.svn.openInEditor(editorId, repoPath)
+    } catch (err: any) {
+      toast(err.message || 'No se pudo abrir el repositorio en el editor', 'error')
+    }
+  }
+
+  const confirmDeleteRepo = async () => {
+    if (!repoToDelete) return
+    try {
+      await window.svn.deleteRepo(repoToDelete.path)
+      if (selectedRepo?.path === repoToDelete.path) setSelectedRepo(null)
+      await refreshRepos()
+      toast(`Repositorio "${repoToDelete.name}" eliminado`, 'success')
+    } catch (err: any) {
+      toast(err.message || 'Error al eliminar repositorio', 'error')
+    } finally {
+      setRepoToDelete(null)
+    }
+  }
+
   const handleCheckoutDone = async () => {
     await refreshRepos()
     const repos = await window.svn.listLocalRepos()
@@ -262,8 +324,12 @@ export default function App() {
           activeRemoteId={activeRemoteId}
           onSelectRepo={handleSelectRepo}
           onSelectRemote={handleSelectRemote}
-          onOpenExplorer={openExplorer}
+          onAddRemote={handleAddRemote}
           onRefresh={refreshRepos}
+          onDeleteRepo={handleDeleteRepo}
+          onOpenFolder={(path) => window.svn.openFolder(path)}
+          availableEditors={availableEditors}
+          onOpenInEditor={handleOpenInEditor}
         />
 
         {/* Main area */}
@@ -340,7 +406,7 @@ export default function App() {
                 <div className="empty-state-icon">📦</div>
                 <div className="empty-state-title">No hay repositorios locales</div>
                 <div className="empty-state-sub">
-                  Usa el Explorador SVN para descargar repositorios del servidor
+                  Usa el Explorador SVN para clonar repositorios del servidor
                 </div>
                 <button
                   className="btn btn-primary"
@@ -383,6 +449,61 @@ export default function App() {
           {t.message}
         </div>
       ))}
+
+      {/* Delete repo confirmation */}
+      {repoToDelete && (
+        <div className="overlay">
+          <div className="dialog" style={{ width: 400 }}>
+            <div className="dialog-title">🗑 Eliminar repositorio</div>
+            <p style={{ fontSize: 13, color: 'var(--text2)', margin: '0 0 8px' }}>
+              ¿Eliminar <strong style={{ color: 'var(--text1)' }}>{repoToDelete.name}</strong>?
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--text2)', margin: '0 0 16px' }}>
+              Esto borrará permanentemente la carpeta local. Los archivos en el servidor SVN no se verán afectados.
+            </p>
+            <div className="dialog-actions">
+              <button className="btn btn-default" onClick={() => setRepoToDelete(null)}>Cancelar</button>
+              <button className="btn btn-danger" onClick={confirmDeleteRepo}>Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add remote server dialog */}
+      {showAddRemoteDialog && (
+        <div className="overlay">
+          <div className="dialog" style={{ width: 480 }}>
+            <div className="dialog-title">➕ Agregar servidor SVN</div>
+            <div className="form-field">
+              <label className="form-label">URL del servidor</label>
+              <input
+                className="form-input"
+                value={addRemoteUrl}
+                onChange={(e) => setAddRemoteUrl(e.target.value)}
+                placeholder="https://servidor/svn"
+                autoFocus
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAddRemoteSubmit() }}
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label">Nombre (opcional)</label>
+              <input
+                className="form-input"
+                value={addRemoteName}
+                onChange={(e) => setAddRemoteName(e.target.value)}
+                placeholder="Mi Servidor SVN"
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAddRemoteSubmit() }}
+              />
+            </div>
+            <div className="dialog-actions">
+              <button className="btn btn-default" onClick={() => setShowAddRemoteDialog(false)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={handleAddRemoteSubmit} disabled={!addRemoteUrl.trim()}>
+                Agregar y explorar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* SVN not found — auto install dialog */}
       {svnMissing && (

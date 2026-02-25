@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Credentials, LogEntry, RemoteEntry, RemoteServer } from '../types/svn'
+import { useState, useEffect, useRef } from 'react'
+import { Credentials, LogEntry, RemoteEntry, RemoteSearchResult, RemoteServer } from '../types/svn'
 
 interface Props {
   credentials: Credentials | null
@@ -25,6 +25,19 @@ interface RemoteLogState {
   loading: boolean
   entries: LogEntry[]
   selected: LogEntry | null
+}
+
+interface RemoteSearchDialogState {
+  open: boolean
+  url: string
+  folderName: string
+  query: string
+  deepSearch: boolean
+  running: boolean
+  results: RemoteSearchResult[]
+  searched: boolean
+  error: string | null
+  searchProgress: { searched: number; total: number; listingStats?: { dirs: number; entries: number } } | null
 }
 
 interface CreateRemoteState {
@@ -57,11 +70,6 @@ function normalizeError(err: any): string {
   return raw.replace(/^Error invoking remote method '[^']+': Error:\s*/i, '').trim()
 }
 
-function isLegacySslError(message: string | null): boolean {
-  if (!message) return false
-  return /E120171|SSL communication/i.test(message)
-}
-
 function formatDate(dateStr: string): string {
   if (!dateStr) return ''
   const d = new Date(dateStr)
@@ -72,6 +80,36 @@ function formatDate(dateStr: string): string {
     hour: '2-digit',
     minute: '2-digit'
   })
+}
+
+function formatDateShort(dateStr: string): string {
+  if (!dateStr) return ''
+  try {
+    const d = new Date(dateStr)
+    const now = new Date()
+    const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000)
+    if (diffDays === 0) return 'hoy'
+    if (diffDays === 1) return 'ayer'
+    if (diffDays < 365) return d.toLocaleDateString('es-GT', { day: 'numeric', month: 'short' })
+    return d.toLocaleDateString('es-GT', { day: 'numeric', month: 'short', year: 'numeric' })
+  } catch {
+    return ''
+  }
+}
+
+
+function highlightText(text: string, query: string) {
+  if (!query.trim()) return text
+  const q = query.trim()
+  const idx = text.toLowerCase().indexOf(q.toLowerCase())
+  if (idx === -1) return text
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark className="tree-search-highlight">{text.slice(idx, idx + q.length)}</mark>
+      {text.slice(idx + q.length)}
+    </>
+  )
 }
 
 function suggestRemoteName(url: string): string {
@@ -102,6 +140,19 @@ export default function ExplorerView({
   const [tree, setTree] = useState<RemoteEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [searchDialog, setSearchDialog] = useState<RemoteSearchDialogState>({
+    open: false,
+    url: '',
+    folderName: '',
+    query: '',
+    deepSearch: false,
+    running: false,
+    results: [],
+    searched: false,
+    error: null,
+    searchProgress: null
+  })
+  const searchUnsubsRef = useRef<Array<() => void>>([])
   const [expandedUrls, setExpandedUrls] = useState<Set<string>>(new Set())
   const [childrenCache, setChildrenCache] = useState<Record<string, RemoteEntry[]>>({})
   const [loadingChildrenUrls, setLoadingChildrenUrls] = useState<Set<string>>(new Set())
@@ -115,27 +166,18 @@ export default function ExplorerView({
     selected: null
   })
   const [createRemote, setCreateRemote] = useState<CreateRemoteState | null>(null)
+  const [saveRemoteDialog, setSaveRemoteDialog] = useState<{ url: string; name: string } | null>(null)
+  const [openEntryMenuUrl, setOpenEntryMenuUrl] = useState<string | null>(null)
+  const treeMenuRef = useRef<HTMLDivElement | null>(null)
 
-  const configureSvnBinary = async () => {
-    try {
-      const svn = getSvnApi()
-      const info = await svn.getBinPath()
-      const current = info.configured || info.bin
-      const answer = window.prompt(
-        'Ruta del binario SVN legacy (deja vacío o escribe "auto" para detección automática):',
-        current
-      )
-      if (answer === null) return
-
-      const target = answer.trim() || 'auto'
-      const result = await svn.setBinPath(target)
-      const versionInfo = result.version ? ` (SVN ${result.version})` : ''
-      toast(`Cliente SVN activo: ${result.bin}${versionInfo}`, 'success')
-      setError(null)
-    } catch (err: any) {
-      toast(normalizeError(err) || 'No se pudo configurar el binario SVN', 'error')
-    }
+  // Per-server navigation state cache
+  interface ServerNavState {
+    tree: RemoteEntry[]
+    expandedUrls: Set<string>
+    childrenCache: Record<string, RemoteEntry[]>
   }
+  const serverStateCache = useRef<Record<string, ServerNavState>>({})
+  const prevRemoteId = useRef<string | null>(null)
 
   useEffect(() => {
     const init = async () => {
@@ -151,44 +193,80 @@ export default function ExplorerView({
   }, [])
 
   useEffect(() => {
-    if (!activeRemote?.url) return
-    setServerUrl(activeRemote.url)
-    setTree([])
-    setExpandedUrls(new Set())
-    setChildrenCache({})
-    setLoadingChildrenUrls(new Set())
+    if (!openEntryMenuUrl) return
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (treeMenuRef.current && !treeMenuRef.current.contains(event.target as Node)) {
+        setOpenEntryMenuUrl(null)
+      }
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenEntryMenuUrl(null)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [openEntryMenuUrl])
+
+  useEffect(() => {
+    if (!activeRemote?.id) return
+
+    const prevId = prevRemoteId.current
+
+    // Save navigation state for the previous server
+    if (prevId && prevId !== activeRemote.id) {
+      serverStateCache.current[prevId] = {
+        tree,
+        expandedUrls,
+        childrenCache
+      }
+    }
+
+    // Restore cached state for this server, or reset if first visit
+    const cached = serverStateCache.current[activeRemote.id]
+    if (cached) {
+      setTree(cached.tree)
+      setExpandedUrls(cached.expandedUrls)
+      setChildrenCache(cached.childrenCache)
+      setLoadingChildrenUrls(new Set())
+    } else {
+      setTree([])
+      setExpandedUrls(new Set())
+      setChildrenCache({})
+      setLoadingChildrenUrls(new Set())
+    }
+
     setError(null)
+    setServerUrl(activeRemote.url)
+    setOpenEntryMenuUrl(null)
+    prevRemoteId.current = activeRemote.id
   }, [activeRemote?.id])
 
-  const saveServerUrl = async (): Promise<boolean> => {
+  const saveServerUrl = () => {
     const nextUrl = serverUrl.trim()
     if (!nextUrl) {
       toast('Ingresa una URL de servidor SVN válida', 'error')
-      return false
+      return
     }
+    setSaveRemoteDialog({ url: nextUrl, name: suggestRemoteName(nextUrl) })
+  }
 
-    const normalized = nextUrl.replace(/\/$/, '')
-    const activeNormalized = (activeRemote?.url || '').replace(/\/$/, '')
-    const defaultName =
-      activeRemote && activeNormalized === normalized
-        ? activeRemote.name
-        : suggestRemoteName(nextUrl)
-    const nameInput = window.prompt('Nombre para este repositorio remoto:', defaultName)
-    if (nameInput === null) return false
-
-    const remoteName = nameInput.trim()
-    if (!remoteName) {
-      toast('El nombre del repositorio remoto es requerido', 'error')
-      return false
-    }
-
+  const submitSaveRemote = async () => {
+    if (!saveRemoteDialog) return
+    const name = saveRemoteDialog.name.trim()
+    if (!name) { toast('El nombre es requerido', 'error'); return }
     try {
-      await onSaveRemote(remoteName, nextUrl)
-      setServerUrl(nextUrl)
-      return true
+      await onSaveRemote(name, saveRemoteDialog.url)
+      setSaveRemoteDialog(null)
     } catch (err: any) {
-      toast(normalizeError(err) || 'No se pudo guardar la URL del servidor', 'error')
-      return false
+      toast(normalizeError(err) || 'No se pudo guardar el servidor remoto', 'error')
     }
   }
 
@@ -206,6 +284,7 @@ export default function ExplorerView({
 
     setLoading(true)
     setError(null)
+    setOpenEntryMenuUrl(null)
     try {
       const svn = getSvnApi()
       await svn.setServerUrl(nextUrl)
@@ -264,6 +343,9 @@ export default function ExplorerView({
       })
       return
     }
+
+    // Update URL bar to reflect current navigation position
+    setServerUrl(entry.url)
 
     setExpandedUrls((prev) => {
       const next = new Set(prev)
@@ -330,7 +412,7 @@ export default function ExplorerView({
       })
       await svn.checkout(checkout.url, checkout.name.trim())
       setCheckout((prev) => prev ? { ...prev, running: false, done: true } : null)
-      toast('Repositorio descargado correctamente', 'success')
+      toast('Repositorio clonado correctamente', 'success')
       onCheckoutDone()
       // Refresh tree to show updated isCheckedOut status
       setTimeout(() => {
@@ -339,7 +421,7 @@ export default function ExplorerView({
       }, 1500)
     } catch (err: any) {
       setCheckout((prev) => prev ? { ...prev, running: false } : null)
-      toast(normalizeError(err) || 'Error al descargar el repositorio', 'error')
+      toast(normalizeError(err) || 'Error al clonar el repositorio', 'error')
     } finally {
       unsub()
     }
@@ -420,9 +502,92 @@ export default function ExplorerView({
     }
   }
 
+  const openSearch = (entry: RemoteEntry) => {
+    setSearchDialog({
+      open: true,
+      url: entry.url,
+      folderName: entry.name.replace(/\/$/, ''),
+      query: '',
+      deepSearch: false,
+      running: false,
+      results: [],
+      searched: false,
+      error: null,
+      searchProgress: null
+    })
+  }
+
+  const runSearch = async () => {
+    const q = searchDialog.query.trim()
+    if (!q) {
+      toast('Escribe un término de búsqueda', 'error')
+      return
+    }
+
+    // Cancel any previous search listeners
+    searchUnsubsRef.current.forEach((fn) => fn())
+    searchUnsubsRef.current = []
+
+    setSearchDialog((prev) => ({
+      ...prev,
+      running: true,
+      results: [],
+      searched: false,
+      error: null,
+      searchProgress: null
+    }))
+
+    const svn = getSvnApi()
+
+    const unsubResult = svn.onSearchResult((result: RemoteSearchResult) => {
+      setSearchDialog((prev) => ({ ...prev, results: [...prev.results, result] }))
+    })
+    const unsubProgress = svn.onSearchProgress((data: { searched: number; total: number }) => {
+      setSearchDialog((prev) => ({ ...prev, searchProgress: data }))
+    })
+    const unsubDone = svn.onSearchDone((data: { searched: number; total: number }) => {
+      setSearchDialog((prev) => ({ ...prev, searchProgress: data }))
+    })
+
+    searchUnsubsRef.current = [unsubResult, unsubProgress, unsubDone]
+
+    try {
+      await svn.searchRemote(searchDialog.url, q, searchDialog.deepSearch)
+      setSearchDialog((prev) => ({ ...prev, running: false, searched: true }))
+    } catch (err: any) {
+      setSearchDialog((prev) => ({
+        ...prev,
+        running: false,
+        searched: true,
+        error: normalizeError(err) || 'Error al buscar'
+      }))
+    } finally {
+      searchUnsubsRef.current.forEach((fn) => fn())
+      searchUnsubsRef.current = []
+    }
+  }
+
+  const closeSearch = () => {
+    searchUnsubsRef.current.forEach((fn) => fn())
+    searchUnsubsRef.current = []
+    setSearchDialog({
+      open: false,
+      url: '',
+      folderName: '',
+      query: '',
+      deepSearch: false,
+      running: false,
+      results: [],
+      searched: false,
+      error: null,
+      searchProgress: null
+    })
+  }
+
   const renderEntry = (entry: RemoteEntry, depth = 0) => {
     const isDir = entry.kind === 'dir'
     const isExpanded = expandedUrls.has(entry.url)
+    const isMenuOpen = openEntryMenuUrl === entry.url
     const children = childrenCache[entry.url]
     const isLoadingChildren = loadingChildrenUrls.has(entry.url)
     const hasLoadedChildren = Object.prototype.hasOwnProperty.call(childrenCache, entry.url)
@@ -430,7 +595,7 @@ export default function ExplorerView({
     return (
       <div key={entry.url}>
         <div
-          className={`tree-item ${isExpanded ? 'expanded' : ''} ${isLoadingChildren ? 'loading' : ''}`}
+          className={`tree-item ${isExpanded ? 'expanded' : ''} ${isLoadingChildren ? 'loading' : ''} ${isMenuOpen ? 'menu-open' : ''}`}
           style={{ paddingLeft: 16 + depth * 20 }}
         >
           {/* Expand arrow */}
@@ -468,14 +633,21 @@ export default function ExplorerView({
             {isDir ? (isExpanded ? '📂' : '📁') : getFileIcon(entry.name)}
           </span>
 
-          {/* Name */}
-          <span
-            className="tree-item-name"
+          {/* Body: name + subtitle */}
+          <div
+            className="tree-item-body"
             onClick={() => toggleExpand(entry)}
             style={{ cursor: isDir ? (isLoadingChildren ? 'wait' : 'pointer') : 'default' }}
           >
-            {entry.name.replace(/\/$/, '')}
-          </span>
+            <span className="tree-item-name">{entry.name.replace(/\/$/, '')}</span>
+            {(entry.author || entry.date) && (
+              <div className="tree-item-subtitle">
+                {entry.author && <span className="tree-item-author-text">{entry.author}</span>}
+                {entry.author && entry.date && <span className="tree-item-dot">·</span>}
+                {entry.date && <span className="tree-item-date-text">{formatDateShort(entry.date)}</span>}
+              </div>
+            )}
+          </div>
 
           {/* Meta */}
           <span className="tree-item-meta">r{entry.revision}</span>
@@ -485,53 +657,79 @@ export default function ExplorerView({
             <span className="tree-item-checked">✓ Local</span>
           )}
 
-          <div className="tree-actions">
+          <div className="tree-item-actions">
             <button
-              className="btn btn-ghost tree-action-btn"
-              title="Ver log"
+              className="tree-menu-btn"
+              title="Opciones"
               onClick={(e) => {
                 e.stopPropagation()
-                openRemoteLog(entry)
+                setOpenEntryMenuUrl(isMenuOpen ? null : entry.url)
               }}
             >
-              🕘 Log
+              ···
             </button>
-            {isDir && (
-              <>
+
+            {isMenuOpen && (
+              <div className="tree-item-dropdown" ref={treeMenuRef}>
                 <button
-                  className="btn btn-ghost tree-action-btn"
-                  title="Crear subcarpeta"
+                  className="tree-dropdown-item"
                   onClick={(e) => {
                     e.stopPropagation()
-                    openCreateRemoteDialog('folder', entry)
+                    setOpenEntryMenuUrl(null)
+                    openRemoteLog(entry)
                   }}
                 >
-                  📁+ Carpeta
+                  🕘 Ver log
                 </button>
-                <button
-                  className="btn btn-ghost tree-action-btn"
-                  title="Crear archivo"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    openCreateRemoteDialog('file', entry)
-                  }}
-                >
-                  📄+ Archivo
-                </button>
-              </>
+                {isDir && (
+                  <>
+                    <div className="tree-dropdown-divider" />
+                    <button
+                      className="tree-dropdown-item"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenEntryMenuUrl(null)
+                        startCheckout(entry)
+                      }}
+                    >
+                      {entry.isCheckedOut ? '🔁 Volver a clonar' : '🧬 Clonar repositorio'}
+                    </button>
+                    <button
+                      className="tree-dropdown-item"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenEntryMenuUrl(null)
+                        openCreateRemoteDialog('folder', entry)
+                      }}
+                    >
+                      📁 Crear subcarpeta
+                    </button>
+                    <button
+                      className="tree-dropdown-item"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenEntryMenuUrl(null)
+                        openCreateRemoteDialog('file', entry)
+                      }}
+                    >
+                      📄 Crear archivo
+                    </button>
+                    <div className="tree-dropdown-divider" />
+                    <button
+                      className="tree-dropdown-item"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setOpenEntryMenuUrl(null)
+                        openSearch(entry)
+                      }}
+                    >
+                      🔍 Buscar en esta carpeta
+                    </button>
+                  </>
+                )}
+              </div>
             )}
           </div>
-
-          {/* Checkout button */}
-          {isDir && (
-            <button
-              className="btn btn-primary"
-              style={{ padding: '3px 10px', fontSize: 11, marginLeft: 8 }}
-              onClick={(e) => { e.stopPropagation(); startCheckout(entry) }}
-            >
-              {entry.isCheckedOut ? '↻ Re-descargar' : '⬇ Descargar'}
-            </button>
-          )}
         </div>
 
         {/* Children */}
@@ -559,7 +757,7 @@ export default function ExplorerView({
     <div className="explorer-layout">
       {/* Toolbar */}
       <div className="explorer-toolbar">
-        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)' }}>🌐 Servidor SVN</span>
+        <span className="explorer-toolbar-title">🌐 Servidor SVN</span>
         <input
           className="form-input explorer-url-input"
           value={serverUrl}
@@ -576,19 +774,15 @@ export default function ExplorerView({
         <button className="btn btn-default" onClick={saveServerUrl} disabled={loading}>
           Guardar URL
         </button>
-        <button className="btn btn-default" onClick={configureSvnBinary} disabled={loading}>
-          Cliente SVN
-        </button>
         {!credentials ? (
           <button
-            className="btn btn-ghost"
-            style={{ color: 'var(--danger)' }}
+            className="btn btn-ghost explorer-toolbar-warning"
             onClick={() => onRequestCredentials(serverUrl)}
           >
             ⚠️ Sin credenciales
           </button>
         ) : (
-          <span style={{ fontSize: 11, color: 'var(--success)', flexShrink: 0 }}>
+          <span className="explorer-toolbar-user">
             👤 {credentials.username}
           </span>
         )}
@@ -616,16 +810,6 @@ export default function ExplorerView({
             <div className="empty-state-sub" style={{ marginTop: 8 }}>
               Verifica que estés en la red interna y que las credenciales sean correctas
             </div>
-            {isLegacySslError(error) && (
-              <>
-                <div className="empty-state-sub" style={{ marginTop: 8, color: 'var(--warning)' }}>
-                  El servidor parece usar SSL/TLS antiguo. Configura un cliente SVN legacy.
-                </div>
-                <button className="btn btn-default" style={{ marginTop: 10 }} onClick={configureSvnBinary}>
-                  Configurar cliente SVN legacy
-                </button>
-              </>
-            )}
             <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={loadRoot}>
               Reintentar
             </button>
@@ -654,6 +838,45 @@ export default function ExplorerView({
           tree.map((entry) => renderEntry(entry, 0))
         )}
       </div>
+
+      {/* Save remote dialog */}
+      {saveRemoteDialog && (
+        <div className="overlay">
+          <div className="dialog" style={{ width: 480 }}>
+            <div className="dialog-title">💾 Guardar como servidor remoto</div>
+            <div className="form-field">
+              <label className="form-label">URL</label>
+              <input
+                className="form-input"
+                value={saveRemoteDialog.url}
+                onChange={(e) => setSaveRemoteDialog((prev) => prev ? { ...prev, url: e.target.value } : null)}
+                placeholder="https://servidor/svn"
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label">Nombre</label>
+              <input
+                className="form-input"
+                value={saveRemoteDialog.name}
+                onChange={(e) => setSaveRemoteDialog((prev) => prev ? { ...prev, name: e.target.value } : null)}
+                placeholder="Mi Servidor SVN"
+                autoFocus
+                onKeyDown={(e) => { if (e.key === 'Enter') submitSaveRemote() }}
+              />
+            </div>
+            <div className="dialog-actions">
+              <button className="btn btn-default" onClick={() => setSaveRemoteDialog(null)}>Cancelar</button>
+              <button
+                className="btn btn-primary"
+                onClick={submitSaveRemote}
+                disabled={!saveRemoteDialog.name.trim()}
+              >
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Remote log dialog */}
       {remoteLog.open && (
@@ -809,12 +1032,136 @@ export default function ExplorerView({
         </div>
       )}
 
+      {/* Search dialog */}
+      {searchDialog.open && (
+        <div className="overlay">
+          <div className="dialog" style={{ width: 600, maxWidth: '90vw' }}>
+            <div className="dialog-title">🔍 Buscar en carpeta</div>
+            <div className="dialog-sub" style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+              {searchDialog.folderName} · {searchDialog.url}
+            </div>
+
+            <div className="form-field" style={{ marginTop: 16 }}>
+              <input
+                className="form-input"
+                value={searchDialog.query}
+                onChange={(e) => setSearchDialog((prev) => ({ ...prev, query: e.target.value }))}
+                placeholder="Nombre de archivo o carpeta..."
+                autoFocus
+                disabled={searchDialog.running}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !searchDialog.running) runSearch() }}
+              />
+            </div>
+
+            <label className="search-deep-label">
+              <input
+                type="checkbox"
+                checked={searchDialog.deepSearch}
+                onChange={(e) => setSearchDialog((prev) => ({ ...prev, deepSearch: e.target.checked }))}
+                disabled={searchDialog.running}
+              />
+              <span>Búsqueda profunda (buscar también en contenido de archivos)</span>
+            </label>
+
+            {searchDialog.running && (
+              <div className="search-running">
+                <div className="spinner" />
+                {searchDialog.searchProgress?.listingStats ? (
+                  // Phase 1: BFS directory exploration
+                  <span>
+                    Explorando… {searchDialog.searchProgress.listingStats.entries} entradas
+                    en {searchDialog.searchProgress.listingStats.dirs} carpetas
+                  </span>
+                ) : searchDialog.deepSearch && searchDialog.searchProgress && searchDialog.searchProgress.total > 0 ? (
+                  // Phase 2: parallel content search
+                  <div className="search-running-detail">
+                    <span>Buscando en contenido… {searchDialog.searchProgress.searched} de {searchDialog.searchProgress.total} archivos</span>
+                    <div className="search-progress-bar-wrap">
+                      <div
+                        className="search-progress-bar-fill"
+                        style={{
+                          width: `${Math.round((searchDialog.searchProgress.searched / searchDialog.searchProgress.total) * 100)}%`
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <span>Buscando…</span>
+                )}
+              </div>
+            )}
+
+            {/* Results appear progressively as they stream in */}
+            {searchDialog.results.length > 0 && (
+              <div className="search-results">
+                <div className="search-results-header">
+                  {searchDialog.results.length} resultado{searchDialog.results.length !== 1 ? 's' : ''}
+                  {searchDialog.running && <span className="search-results-streaming"> · buscando…</span>}
+                </div>
+                <div className="search-results-list">
+                  {searchDialog.results.map((r, i) => (
+                    <div key={i} className="search-result-item">
+                      <span className="search-result-icon">
+                        {r.kind === 'revision' ? '🕘' : r.kind === 'dir' ? '📁' : getFileIcon(r.name)}
+                      </span>
+                      <div className="search-result-body">
+                        <span className="search-result-name">
+                          {r.kind === 'revision'
+                            ? <><strong>{r.name}</strong></>
+                            : highlightText(r.name, searchDialog.query)
+                          }
+                        </span>
+                        <span className="search-result-path">
+                          {r.kind === 'revision'
+                            ? highlightText(r.revisionMessage || r.path, searchDialog.query)
+                            : r.path
+                          }
+                        </span>
+                      </div>
+                      <span className={`search-result-badge ${r.matchType}`}>
+                        {r.matchType === 'name' ? 'nombre' : r.matchType === 'comment' ? 'comentario' : 'contenido'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* "No results" only shown after search completes with zero results */}
+            {searchDialog.searched && !searchDialog.running && !searchDialog.error && searchDialog.results.length === 0 && (
+              <div className="search-results">
+                <div className="search-empty">No se encontraron resultados para "{searchDialog.query}"</div>
+              </div>
+            )}
+
+            {searchDialog.searched && searchDialog.error && (
+              <div className="search-results">
+                <div className="search-error">{searchDialog.error}</div>
+              </div>
+            )}
+
+            <div className="dialog-actions">
+              <button className="btn btn-default" onClick={closeSearch} disabled={searchDialog.running}>
+                Cerrar
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={runSearch}
+                disabled={searchDialog.running || !searchDialog.query.trim()}
+              >
+                {searchDialog.running ? '⟳ Buscando...' : '🔍 Buscar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Checkout dialog */}
       {checkout && (
         <div className="overlay">
           <div className="dialog" style={{ width: 460 }}>
             <div className="dialog-title">
-              {checkout.done ? '✅ Descarga completada' : '⬇ Descargar repositorio'}
+              {checkout.done ? '✅ Clonación completada' : '🧬 Clonar repositorio'}
             </div>
             <div className="dialog-sub" style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
               {checkout.url}
@@ -838,7 +1185,7 @@ export default function ExplorerView({
 
             {(checkout.running || checkout.done) && (
               <div className="progress-log" style={{ marginBottom: 12, height: 120 }}>
-                {checkout.log || 'Iniciando descarga...'}
+                {checkout.log || 'Iniciando clonación...'}
               </div>
             )}
 
@@ -862,7 +1209,7 @@ export default function ExplorerView({
                   onClick={doCheckout}
                   disabled={checkout.running}
                 >
-                  {checkout.running ? '⟳ Descargando...' : '⬇ Descargar'}
+                  {checkout.running ? '⟳ Clonando...' : '🧬 Clonar'}
                 </button>
               )}
             </div>

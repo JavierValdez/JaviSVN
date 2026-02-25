@@ -18,6 +18,7 @@ const DEFAULT_SVN_CANDIDATES = [
   '/usr/bin/svn',
   '/opt/local/bin/svn',
 ]
+const EXTRA_PATH_SEGMENTS = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 
 // ─── Simple JSON Store ────────────────────────────────────────────────────────
 function getStorePath(): string {
@@ -144,6 +145,14 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((v) => Boolean(v && v.trim())))]
 }
 
+function buildEnvWithExtraPath(): NodeJS.ProcessEnv {
+  const currentPath = process.env.PATH || ''
+  const mergedPath = currentPath.includes('/opt/homebrew/bin')
+    ? currentPath
+    : `${EXTRA_PATH_SEGMENTS}:${currentPath}`
+  return { ...process.env, PATH: mergedPath }
+}
+
 function findSvnBin(preferred?: string): string {
   // 1. Bundled binary (packaged app: Contents/Resources/bin/svn)
   const bundledPackaged = join(process.resourcesPath || '', 'bin', 'svn')
@@ -177,6 +186,122 @@ function findSvnBin(preferred?: string): string {
   return 'svn'
 }
 let SVN_BIN = findSvnBin((storeGet('svnBinPath') || '').toString())
+
+type SupportedEditorId = 'vscode' | 'vscode-insiders'
+
+interface DetectedEditor {
+  id: SupportedEditorId
+  label: string
+  command?: string
+  macAppPath?: string
+  winExecutablePath?: string
+}
+
+function commandExists(command: string): boolean {
+  const locator = process.platform === 'win32' ? 'where' : 'which'
+  const result = spawnSync(locator, [command], {
+    env: buildEnvWithExtraPath(),
+    stdio: 'ignore',
+    windowsHide: true,
+    timeout: 3000
+  })
+  return !result.error && result.status === 0
+}
+
+function firstExistingPath(paths: string[]): string | undefined {
+  for (const path of paths) {
+    if (path && existsSync(path)) return path
+  }
+  return undefined
+}
+
+function detectEditors(): DetectedEditor[] {
+  const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local')
+  const programFiles = process.env.ProgramFiles || 'C:\\Program Files'
+  const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+
+  const definitions: Array<{
+    id: SupportedEditorId
+    label: string
+    command: string
+    macAppName: string
+    winCandidates: string[]
+  }> = [
+    {
+      id: 'vscode',
+      label: 'VS Code',
+      command: 'code',
+      macAppName: 'Visual Studio Code.app',
+      winCandidates: [
+        join(localAppData, 'Programs', 'Microsoft VS Code', 'Code.exe'),
+        join(programFiles, 'Microsoft VS Code', 'Code.exe'),
+        join(programFilesX86, 'Microsoft VS Code', 'Code.exe')
+      ]
+    },
+    {
+      id: 'vscode-insiders',
+      label: 'VS Code Insiders',
+      command: 'code-insiders',
+      macAppName: 'Visual Studio Code - Insiders.app',
+      winCandidates: [
+        join(localAppData, 'Programs', 'Microsoft VS Code Insiders', 'Code - Insiders.exe'),
+        join(programFiles, 'Microsoft VS Code Insiders', 'Code - Insiders.exe'),
+        join(programFilesX86, 'Microsoft VS Code Insiders', 'Code - Insiders.exe')
+      ]
+    }
+  ]
+
+  return definitions
+    .map((editor) => {
+      const command = commandExists(editor.command) ? editor.command : undefined
+      const macAppPath = process.platform === 'darwin'
+        ? firstExistingPath([
+          join('/Applications', editor.macAppName),
+          join(homedir(), 'Applications', editor.macAppName)
+        ])
+        : undefined
+      const winExecutablePath = process.platform === 'win32'
+        ? firstExistingPath(editor.winCandidates)
+        : undefined
+
+      if (!command && !macAppPath && !winExecutablePath) return null
+      return {
+        id: editor.id,
+        label: editor.label,
+        command,
+        macAppPath,
+        winExecutablePath
+      } as DetectedEditor
+    })
+    .filter((x): x is DetectedEditor => x !== null)
+}
+
+function runCommand(command: string, args: string[], options: { shell?: boolean } = {}): boolean {
+  const result = spawnSync(command, args, {
+    env: buildEnvWithExtraPath(),
+    stdio: 'ignore',
+    windowsHide: true,
+    shell: options.shell || false,
+    timeout: 10000
+  })
+  return !result.error && result.status === 0
+}
+
+function openRepoInEditor(editorId: SupportedEditorId, repoPath: string): void {
+  const safePath = (repoPath || '').trim()
+  if (!safePath) throw new Error('Ruta de repositorio inválida')
+  if (!existsSync(safePath)) throw new Error('El repositorio no existe')
+  if (!statSync(safePath).isDirectory()) throw new Error('La ruta no es una carpeta')
+
+  const editor = detectEditors().find((x) => x.id === editorId)
+  if (!editor) throw new Error('Ese editor no está disponible en este equipo')
+
+  if (editor.command && runCommand(editor.command, [safePath], { shell: process.platform === 'win32' })) return
+  if (process.platform === 'darwin' && editor.macAppPath && runCommand('open', ['-a', editor.macAppPath, safePath])) return
+  if (process.platform === 'win32' && editor.winExecutablePath && runCommand(editor.winExecutablePath, [safePath])) return
+
+  throw new Error(`No se pudo abrir el repositorio en ${editor.label}`)
+}
 
 // ─── Main Window ─────────────────────────────────────────────────────────────
 let mainWindow: BrowserWindow
@@ -591,6 +716,14 @@ ipcMain.handle('repos:list', async () => {
 
 ipcMain.handle('repos:basePath', () => BASE_REPO_PATH)
 
+ipcMain.handle('repos:delete', (_e, repoPath: string) => {
+  if (!repoPath.startsWith(BASE_REPO_PATH)) {
+    throw new Error('Ruta de repositorio fuera del directorio permitido')
+  }
+  if (!existsSync(repoPath)) throw new Error('El repositorio no existe')
+  rmSync(repoPath, { recursive: true, force: true })
+})
+
 // ─── IPC: SVN List (remote) ───────────────────────────────────────────────────
 ipcMain.handle('svn:list', async (_e, url: string) => {
   const { stdout } = await runSvn(['list', '--xml', url], { timeoutMs: 30000 })
@@ -624,6 +757,214 @@ ipcMain.handle('svn:list', async (_e, url: string) => {
         : undefined
     }
   })
+})
+
+// ─── Search helpers ──────────────────────────────────────────────────────────
+
+// Extensions that cannot contain text — skip in content search
+const BINARY_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'tiff', 'psd',
+  'jar', 'war', 'ear', 'zip', 'tar', 'gz', 'bz2', '7z', 'rar',
+  'class', 'dll', 'so', 'dylib', 'exe', 'obj', 'o', 'a',
+  'mp4', 'mp3', 'avi', 'mov', 'mkv', 'wav', 'flac', 'ogg',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+  'db', 'sqlite', 'bin', 'dat', 'dump',
+  'ttf', 'woff', 'woff2', 'eot'
+])
+
+// Run at most `concurrency` async tasks simultaneously
+async function runConcurrent(
+  tasks: Array<() => Promise<void>>,
+  concurrency: number
+): Promise<void> {
+  let nextIdx = 0
+  const worker = async () => {
+    while (nextIdx < tasks.length) {
+      const i = nextIdx++
+      await tasks[i]()
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker))
+}
+
+// Stream `svn cat <url>` and resolve true as soon as `query` is found; kills early
+function catSearchFile(fileUrl: string, query: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const extraPath = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+    const currentPath = process.env.PATH || ''
+    const mergedPath = currentPath.includes('/opt/homebrew/bin')
+      ? currentPath
+      : `${extraPath}:${currentPath}`
+
+    const proc = spawn(SVN_BIN, ['cat', fileUrl, ...getSvnAuthArgs()], {
+      env: { ...process.env, LANG: 'en_US.UTF-8', PATH: mergedPath }
+    })
+
+    let buffer = ''
+    let settled = false
+
+    const finish = (result: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(result)
+    }
+
+    const timeoutId = setTimeout(() => { proc.kill('SIGTERM'); finish(false) }, 30000)
+
+    proc.stdout.on('data', (chunk: Buffer) => {
+      if (settled) return
+      buffer += chunk.toString('utf-8')
+      if (buffer.toLowerCase().includes(query)) {
+        clearTimeout(timeoutId)
+        proc.kill('SIGTERM')
+        finish(true)
+        return
+      }
+      // Prevent memory explosion: keep tail for cross-chunk match detection
+      if (buffer.length > 512 * 1024) {
+        buffer = buffer.slice(-(query.length + 16))
+      }
+    })
+
+    proc.on('close', () => { clearTimeout(timeoutId); finish(false) })
+    proc.on('error', () => { clearTimeout(timeoutId); finish(false) })
+  })
+}
+
+// ─── IPC: SVN Search Remote ──────────────────────────────────────────────────
+ipcMain.handle('svn:searchRemote', async (event, url: string, query: string, deepSearch: boolean) => {
+  const q = (query || '').trim().toLowerCase()
+  if (!q) {
+    event.sender.send('svn:searchDone', { searched: 0, total: 0 })
+    return { ok: true }
+  }
+
+  // Step 1 — BFS parallel listing: 5 dirs at a time, 15s timeout each
+  // Avoids the single huge svn list --depth infinity call that times out on large repos
+  type SearchEntry = { path: string; name: string; kind: 'dir' | 'file'; entryUrl: string }
+  const baseUrl = url.replace(/\/$/, '')
+  const allEntries: SearchEntry[] = []
+  const dirQueue: string[] = [url]
+  let processedDirs = 0
+  const LIST_BATCH = 5
+
+  while (dirQueue.length > 0) {
+    const batch = dirQueue.splice(0, LIST_BATCH)
+
+    const stdouts = await Promise.all(
+      batch.map(async (dirUrl) => {
+        try {
+          const { stdout } = await runSvn(['list', '--xml', dirUrl], { timeoutMs: 30000 })
+          return { dirUrl, stdout }
+        } catch {
+          return { dirUrl, stdout: null }
+        }
+      })
+    )
+
+    processedDirs += batch.length
+
+    for (const { dirUrl, stdout } of stdouts) {
+      if (!stdout) continue
+      const parsed = await parseXml(stdout)
+      const rawList = parsed.lists?.list
+      const listArr = Array.isArray(rawList) ? rawList : (rawList ? [rawList] : [])
+
+      for (const list of listArr) {
+        const listPath = ((list.$?.path as string) || dirUrl).replace(/\/$/, '')
+        const entries = list.entry
+        if (!entries) continue
+        const arr = Array.isArray(entries) ? entries : [entries]
+
+        for (const e of arr) {
+          const rawName: string = e.name?._?.trim() || (typeof e.name === 'string' ? e.name : '') || ''
+          const name = rawName.replace(/\/$/, '')
+          if (!name) continue
+          const kind: 'dir' | 'file' = e.$?.kind === 'dir' ? 'dir' : 'file'
+          const entryUrl = listPath + '/' + name
+          const relativePath = entryUrl.replace(baseUrl, '').replace(/^\//, '')
+          allEntries.push({ path: relativePath, name, kind, entryUrl })
+          if (kind === 'dir') dirQueue.push(entryUrl)
+        }
+      }
+    }
+
+    event.sender.send('svn:searchProgress', {
+      searched: 0,
+      total: 0,
+      listingStats: { dirs: processedDirs, entries: allEntries.length }
+    })
+  }
+
+  // Step 2 — Name matches: filter + stream immediately to renderer
+  const nameResults = allEntries
+    .filter(e => e.name.toLowerCase().includes(q))
+    .map(e => ({ ...e, matchType: 'name' as const }))
+
+  for (const r of nameResults) {
+    event.sender.send('svn:searchResult', r)
+  }
+
+  // Step 2b — Search in revision log messages (always, regardless of deepSearch)
+  try {
+    const { stdout: logStdout } = await runSvn(
+      ['log', '--xml', '--limit', '500', url],
+      { timeoutMs: 120000 }
+    )
+    const logParsed = await parseXml(logStdout)
+    const logEntries = parseLogEntries(logParsed)
+
+    for (const entry of logEntries) {
+      if (entry.message && entry.message.toLowerCase().includes(q)) {
+        const preview = entry.message.length > 90
+          ? entry.message.slice(0, 90) + '…'
+          : entry.message
+        event.sender.send('svn:searchResult', {
+          path: preview,
+          name: `r${entry.revision}`,
+          kind: 'revision' as const,
+          matchType: 'comment' as const,
+          entryUrl: url,
+          revision: entry.revision,
+          revisionMessage: entry.message
+        })
+      }
+    }
+  } catch {
+    // Log search failed silently — continue with name/content results
+  }
+
+  if (!deepSearch) {
+    event.sender.send('svn:searchDone', { searched: 0, total: 0 })
+    return { ok: true }
+  }
+
+  // Step 3 — Content search: 8 parallel svn cat streams, no temp dir, early exit per file
+  const nameResultPaths = new Set(nameResults.map(r => r.path))
+  const fileEntries = allEntries.filter(e =>
+    e.kind === 'file' &&
+    !nameResultPaths.has(e.path) &&
+    !BINARY_EXTENSIONS.has((e.name.split('.').pop() || '').toLowerCase())
+  )
+
+  const total = fileEntries.length
+  let searched = 0
+
+  event.sender.send('svn:searchProgress', { searched: 0, total })
+
+  const CONCURRENCY = 8
+  const tasks = fileEntries.map(entry => async () => {
+    const hasMatch = await catSearchFile(entry.entryUrl, q)
+    searched++
+    if (hasMatch) {
+      event.sender.send('svn:searchResult', { ...entry, matchType: 'content' as const })
+    }
+    event.sender.send('svn:searchProgress', { searched, total })
+  })
+
+  await runConcurrent(tasks, CONCURRENCY)
+  event.sender.send('svn:searchDone', { searched: total, total })
+  return { ok: true }
 })
 
 // ─── IPC: SVN Remote actions ────────────────────────────────────────────────
@@ -691,6 +1032,16 @@ ipcMain.handle('svn:checkout', async (_e, url: string, targetName: string) => {
 })
 
 // ─── IPC: SVN Update ─────────────────────────────────────────────────────────
+const SSL_TRANSIENT_RE = /svn:\s+E1[12]\d{4}:.*(?:SSL|Unable to connect|Error running context)/i
+
+function filterSslNoise(chunk: string): string {
+  return chunk
+    .split('\n')
+    .filter((line) => !SSL_TRANSIENT_RE.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+}
+
 ipcMain.handle('svn:update', async (_e, repoPath: string) => {
   try {
     const { stdout, stderr } = await runSvn(
@@ -699,7 +1050,10 @@ ipcMain.handle('svn:update', async (_e, repoPath: string) => {
         cwd: repoPath,
         timeoutMs: 10 * 60 * 1000,
         onData: (chunk) => mainWindow.webContents.send('svn:update-progress', chunk),
-        onErrorData: (chunk) => mainWindow.webContents.send('svn:update-progress', chunk)
+        onErrorData: (chunk) => {
+          const filtered = filterSslNoise(chunk)
+          if (filtered.trim()) mainWindow.webContents.send('svn:update-progress', filtered)
+        }
       }
     )
     return { success: true, output: stdout || stderr }
@@ -752,6 +1106,32 @@ ipcMain.handle('svn:diff', async (_e, repoPath: string, filePath: string) => {
   }
 })
 
+// ─── IPC: SVN Diff at specific revision ──────────────────────────────────────
+ipcMain.handle('svn:revisionFileDiff', async (_e, repoPath: string, revision: number, svnPath: string) => {
+  // Get the repository root URL from the working copy
+  const { stdout: infoXml } = await runSvn(['info', '--xml'], { cwd: repoPath })
+  const parsed = await xml2js.parseStringPromise(infoXml, { explicitArray: false })
+  const rootUrl: string = parsed?.info?.entry?.repository?.root || ''
+  if (!rootUrl) throw new Error('No se pudo obtener la URL raíz del repositorio')
+
+  const fileUrl = rootUrl + svnPath
+  try {
+    const { stdout } = await runSvn([
+      'diff',
+      `-c${revision}`,
+      fileUrl
+    ])
+    return stdout || '(sin cambios en esta revisión)'
+  } catch (err: any) {
+    const msg = String(err?.message || '')
+    if (msg.includes('was added') || msg.includes('E195020')) {
+      // File was added in this revision — diff against empty
+      return `(archivo añadido en r${revision})`
+    }
+    throw err
+  }
+})
+
 // ─── IPC: SVN Commit ─────────────────────────────────────────────────────────
 ipcMain.handle('svn:commit', async (_e, repoPath: string, files: string[], message: string) => {
   // Add unversioned files first
@@ -787,11 +1167,15 @@ ipcMain.handle('svn:revert', async (_e, repoPath: string, files: string[]) => {
 })
 
 // ─── IPC: SVN Log ────────────────────────────────────────────────────────────
-ipcMain.handle('svn:log', async (_e, repoPath: string, limit = 50) => {
-  const { stdout } = await runSvn(
-    ['log', '--xml', '--verbose', `--limit=${limit}`],
-    { cwd: repoPath }
-  )
+ipcMain.handle('svn:log', async (_e, repoPath: string, limit = 50, fromRevision?: number) => {
+  const safeLimit = Math.max(1, Math.min(500, Number(limit) || 50))
+  const safeFromRevision = Number(fromRevision)
+  const args = ['log', '--xml', '--verbose', `--limit=${safeLimit}`]
+  if (Number.isFinite(safeFromRevision) && safeFromRevision > 0) {
+    args.push('-r', `${Math.floor(safeFromRevision)}:1`)
+  }
+
+  const { stdout } = await runSvn(args, { cwd: repoPath })
   const parsed = await parseXml(stdout)
   const entries = parsed.log?.logentry
   if (!entries) return []
@@ -836,6 +1220,24 @@ ipcMain.handle('dialog:openFile', async (_e, repoPath: string, filePath: string)
 
 ipcMain.handle('dialog:openFolder', async (_e, path: string) => {
   shell.openPath(path)
+})
+
+ipcMain.handle('dialog:listEditors', async () => {
+  return detectEditors().map(({ id, label }) => ({ id, label }))
+})
+
+ipcMain.handle('dialog:openInEditor', async (_e, editorId: string, repoPath: string) => {
+  const safeEditorId = (editorId || '').trim()
+  const safeRepoPath = (repoPath || '').trim()
+  if (!safeRepoPath.startsWith(BASE_REPO_PATH)) {
+    throw new Error('Ruta de repositorio fuera del directorio permitido')
+  }
+  if (safeEditorId !== 'vscode' && safeEditorId !== 'vscode-insiders') {
+    throw new Error('Editor no soportado')
+  }
+
+  openRepoInEditor(safeEditorId, safeRepoPath)
+  return true
 })
 
 // ─── IPC: SVN test connection ────────────────────────────────────────────────

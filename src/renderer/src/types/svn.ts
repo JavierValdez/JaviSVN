@@ -21,6 +21,13 @@ export interface LocalRepo {
   changesCount: number
 }
 
+export type EditorId = 'vscode' | 'vscode-insiders'
+
+export interface EditorOption {
+  id: EditorId
+  label: string
+}
+
 export interface FileChange {
   path: string
   status: 'M' | 'A' | 'D' | '?' | 'C' | '!' | 'R'
@@ -39,6 +46,16 @@ export interface LogEntry {
 export interface LogPath {
   path: string
   action: 'A' | 'M' | 'D' | 'R'
+}
+
+export interface RemoteSearchResult {
+  path: string
+  name: string
+  kind: 'dir' | 'file' | 'revision'
+  matchType: 'name' | 'content' | 'comment'
+  entryUrl: string
+  revision?: number
+  revisionMessage?: string
 }
 
 export interface RemoteEntry {

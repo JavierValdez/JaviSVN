@@ -1,16 +1,19 @@
 import { useState, useEffect } from 'react'
 import { LocalRepo, LogEntry } from '../types/svn'
+import DiffViewer from './DiffViewer'
 
 interface Props {
   repo: LocalRepo
   toast: (msg: string, type?: 'success' | 'error' | 'info') => void
 }
 
-const ACTION_LABEL: Record<string, string> = {
-  M: '✏️',
-  A: '➕',
-  D: '🗑️',
-  R: '🔄'
+const LOG_PAGE_SIZE = 100
+
+const ACTION_META: Record<string, { label: string; cls: string }> = {
+  M: { label: 'M', cls: 'action-modified' },
+  A: { label: 'A', cls: 'action-added' },
+  D: { label: 'D', cls: 'action-deleted' },
+  R: { label: 'R', cls: 'action-replaced' },
 }
 
 function formatDate(dateStr: string): string {
@@ -25,25 +28,104 @@ function formatDate(dateStr: string): string {
   })
 }
 
+function formatDateShort(dateStr: string): string {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  return d.toLocaleDateString('es-GT', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function authorInitials(author: string): string {
+  return (author || '?').slice(0, 2).toUpperCase()
+}
+
+function splitPath(fullPath: string): { dir: string; file: string } {
+  const parts = fullPath.replace(/^\//, '').split('/')
+  const file = parts.pop() || fullPath
+  const dir = parts.length > 0 ? '/' + parts.join('/') : ''
+  return { dir, file }
+}
+
+interface FileDiffState {
+  svnPath: string
+  fileName: string
+  diff: string | null
+  loading: boolean
+}
+
 export default function HistoryView({ repo, toast }: Props) {
   const [log, setLog] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(false)
   const [selected, setSelected] = useState<LogEntry | null>(null)
+  const [fileDiff, setFileDiff] = useState<FileDiffState | null>(null)
 
   useEffect(() => {
+    setFileDiff(null)
     loadLog()
   }, [repo.path])
 
   const loadLog = async () => {
     setLoading(true)
+    setHasMore(false)
     try {
-      const entries = await window.svn.log(repo.path, 100)
+      const entries = await window.svn.log(repo.path, LOG_PAGE_SIZE)
       setLog(entries)
       if (entries.length > 0) setSelected(entries[0])
+      else setSelected(null)
+
+      const lastRevision = entries.length > 0 ? entries[entries.length - 1].revision : 0
+      setHasMore(entries.length === LOG_PAGE_SIZE && lastRevision > 1)
     } catch (err: any) {
       toast(err.message || 'Error al cargar historial', 'error')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadMore = async () => {
+    if (loading || loadingMore || !hasMore || log.length === 0) return
+
+    const oldestLoadedRevision = log[log.length - 1].revision
+    const nextFromRevision = oldestLoadedRevision - 1
+    if (nextFromRevision < 1) {
+      setHasMore(false)
+      return
+    }
+
+    setLoadingMore(true)
+    try {
+      const moreEntries = await window.svn.log(repo.path, LOG_PAGE_SIZE, nextFromRevision)
+      if (moreEntries.length === 0) {
+        setHasMore(false)
+        return
+      }
+
+      setLog((prev) => {
+        const seen = new Set(prev.map((entry) => entry.revision))
+        const deduped = moreEntries.filter((entry) => !seen.has(entry.revision))
+        return [...prev, ...deduped]
+      })
+
+      const lastRevision = moreEntries[moreEntries.length - 1].revision
+      setHasMore(moreEntries.length === LOG_PAGE_SIZE && lastRevision > 1)
+    } catch (err: any) {
+      toast(err.message || 'Error al cargar más historial', 'error')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  const openFileDiff = async (svnPath: string, revision: number) => {
+    const parts = svnPath.split('/')
+    const fileName = parts[parts.length - 1] || svnPath
+    setFileDiff({ svnPath, fileName, diff: null, loading: true })
+    try {
+      const diff = await window.svn.revisionFileDiff(repo.path, revision, svnPath)
+      setFileDiff({ svnPath, fileName, diff, loading: false })
+    } catch (err: any) {
+      toast(err.message || 'Error al obtener el diff', 'error')
+      setFileDiff(null)
     }
   }
 
@@ -61,19 +143,37 @@ export default function HistoryView({ repo, toast }: Props) {
             <div className="empty-state-title">Sin historial</div>
           </div>
         ) : (
-          log.map((entry) => (
-            <div
-              key={entry.revision}
-              className={`history-item ${selected?.revision === entry.revision ? 'selected' : ''}`}
-              onClick={() => setSelected(entry)}
-            >
-              <div className="history-rev">r{entry.revision}</div>
-              <div className="history-msg">{entry.message || '(sin mensaje)'}</div>
-              <div className="history-meta">
-                {entry.author} · {formatDate(entry.date)}
+          <>
+            {log.map((entry) => (
+              <div
+                key={entry.revision}
+                className={`history-item ${selected?.revision === entry.revision ? 'selected' : ''}`}
+                onClick={() => setSelected(entry)}
+              >
+                <div className="history-item-row">
+                  <div className="history-avatar">{authorInitials(entry.author)}</div>
+                  <div className="history-item-body">
+                    <div className="history-msg">{entry.message || '(sin mensaje)'}</div>
+                    <div className="history-meta">
+                      <span className="history-author">{entry.author}</span>
+                      <span className="history-dot">·</span>
+                      <span>{formatDateShort(entry.date)}</span>
+                    </div>
+                  </div>
+                  <div className="history-rev-badge">r{entry.revision}</div>
+                </div>
               </div>
+            ))}
+            <div className="history-list-footer">
+              {hasMore ? (
+                <button className="btn btn-default history-load-more-btn" onClick={loadMore} disabled={loadingMore}>
+                  {loadingMore ? '⟳ Cargando...' : 'Cargar más'}
+                </button>
+              ) : (
+                <div className="history-list-end">No hay más revisiones</div>
+              )}
             </div>
-          ))
+          </>
         )}
       </div>
 
@@ -81,26 +181,51 @@ export default function HistoryView({ repo, toast }: Props) {
       <div className="history-detail">
         {selected ? (
           <>
-            <div className="history-detail-rev">Revisión {selected.revision}</div>
-            <div className="history-detail-author">
-              👤 {selected.author} · 🕐 {formatDate(selected.date)}
+            {/* Header */}
+            <div className="history-detail-header">
+              <div className="history-detail-avatar">{authorInitials(selected.author)}</div>
+              <div className="history-detail-meta">
+                <div className="history-detail-author">{selected.author}</div>
+                <div className="history-detail-date">{formatDate(selected.date)}</div>
+              </div>
+              <div className="history-detail-rev-badge">r{selected.revision}</div>
             </div>
+
+            {/* Commit message */}
             <div className="history-detail-msg">
               {selected.message || '(sin mensaje de commit)'}
             </div>
 
+            {/* Changed files */}
             {selected.paths.length > 0 && (
-              <>
+              <div className="history-files-section">
                 <div className="history-paths-title">
-                  Archivos afectados ({selected.paths.length})
+                  Archivos afectados
+                  <span className="history-paths-count">{selected.paths.length}</span>
                 </div>
-                {selected.paths.map((p, i) => (
-                  <div key={i} className="history-path-item">
-                    <span title={p.action}>{ACTION_LABEL[p.action] || p.action}</span>
-                    <span>{p.path}</span>
-                  </div>
-                ))}
-              </>
+                <div className="history-files-list">
+                  {selected.paths.map((p, i) => {
+                    const meta = ACTION_META[p.action] || { label: p.action, cls: 'action-other' }
+                    const { dir, file } = splitPath(p.path)
+                    const canDiff = p.action !== 'D'
+                    return (
+                      <div
+                        key={i}
+                        className={`history-path-item ${canDiff ? 'history-path-item-clickable' : ''}`}
+                        onClick={() => canDiff && openFileDiff(p.path, selected.revision)}
+                        title={canDiff ? 'Ver diff de este archivo' : ''}
+                      >
+                        <span className={`history-action-badge ${meta.cls}`}>{meta.label}</span>
+                        <div className="history-path-text">
+                          <span className="history-path-file">{file}</span>
+                          {dir && <span className="history-path-dir">{dir}</span>}
+                        </div>
+                        {canDiff && <span className="history-path-diff-hint">Ver diff →</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
             )}
           </>
         ) : (
@@ -110,6 +235,44 @@ export default function HistoryView({ repo, toast }: Props) {
           </div>
         )}
       </div>
+      {/* File diff modal */}
+      {fileDiff && (
+        <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget) setFileDiff(null) }}>
+          <div className="dialog" style={{ width: '85vw', maxWidth: 1100, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="dialog-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span>Diff · {fileDiff.fileName}</span>
+              {selected && (
+                <span style={{ fontSize: 11, fontWeight: 400, fontFamily: 'SF Mono, Menlo, monospace', color: 'var(--accent)', background: '#dbeafe', borderRadius: 10, padding: '2px 8px' }}>
+                  r{selected.revision}
+                </span>
+              )}
+              <button
+                className="btn btn-ghost"
+                style={{ marginLeft: 'auto', padding: '2px 8px' }}
+                onClick={() => setFileDiff(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="dialog-sub" style={{ fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all', marginBottom: 8 }}>
+              {fileDiff.svnPath}
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
+              {fileDiff.loading ? (
+                <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
+                  <div className="spinner spinner-lg" />
+                </div>
+              ) : fileDiff.diff && fileDiff.diff.includes('@@') ? (
+                <DiffViewer diff={fileDiff.diff} filePath={fileDiff.fileName} />
+              ) : (
+                <div style={{ padding: 24, color: 'var(--text2)', fontSize: 13 }}>
+                  {fileDiff.diff || '(sin cambios)'}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

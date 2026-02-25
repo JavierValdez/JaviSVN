@@ -1,6 +1,6 @@
 {
   "name": "javisvn",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "SVN Desktop Client - Cliente SVN estilo GitHub Desktop",
   "type": "module",
   "main": "./out/main/index.js",
@@ -38,9 +38,46 @@
       "target": "dmg",
       "icon": "resources/icon.icns"
     },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        },
+        {
+          "x": 130,
+          "y": 360,
+          "type": "file",
+          "path": "resources/LEER_ANTES_DE_ABRIR.txt"
+        }
+      ]
+    },
     "extraResources": [
-      { "from": "resources/bin", "to": "bin", "filter": ["**/*"] },
-      { "from": "resources/lib", "to": "lib", "filter": ["**/*"] }
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/lib",
+        "to": "lib",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/LEER_ANTES_DE_ABRIR.txt",
+        "to": "LEER_ANTES_DE_ABRIR.txt"
+      }
     ],
     "directories": {
       "output": "dist"

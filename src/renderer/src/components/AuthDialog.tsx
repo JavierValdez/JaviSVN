@@ -17,9 +17,7 @@ export default function AuthDialog({ onSave, onCancel, initialServerUrl = '' }: 
     setTesting(true)
     setTestResult(null)
     try {
-      // Save temporarily so the ping can use them
-      await window.svn.setCredentials({ username, password, serverUrl })
-      const result = await window.svn.ping(serverUrl)
+      const result = await window.svn.pingWithCreds({ url: serverUrl, username, password })
       if (result.ok) {
         setTestResult({ ok: true, msg: 'Conexión exitosa ✓' })
       } else {

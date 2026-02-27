@@ -16,6 +16,8 @@ interface Props {
   onOpenFolder: (path: string) => void
   availableEditors: EditorOption[]
   onOpenInEditor: (editorId: EditorId, path: string) => void
+  onDeleteRemote: (remote: RemoteServer) => void
+  onRenameRemote: (remote: RemoteServer) => void
 }
 
 function timeAgo(dateStr: string): string {
@@ -42,10 +44,14 @@ export default function Sidebar({
   onDeleteRepo,
   onOpenFolder,
   availableEditors,
-  onOpenInEditor
+  onOpenInEditor,
+  onDeleteRemote,
+  onRenameRemote
 }: Props) {
   const [openMenuPath, setOpenMenuPath] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const [openRemoteMenuId, setOpenRemoteMenuId] = useState<string | null>(null)
+  const remoteMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (!openMenuPath) return
@@ -57,6 +63,17 @@ export default function Sidebar({
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [openMenuPath])
+
+  useEffect(() => {
+    if (!openRemoteMenuId) return
+    const handleClick = (e: MouseEvent) => {
+      if (remoteMenuRef.current && !remoteMenuRef.current.contains(e.target as Node)) {
+        setOpenRemoteMenuId(null)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [openRemoteMenuId])
 
   return (
     <div className="sidebar">
@@ -168,15 +185,55 @@ export default function Sidebar({
           remotes.map((remote) => (
             <div
               key={remote.id}
-              className={`sidebar-item ${(isExplorerActive && activeRemoteId === remote.id) ? 'active' : ''}`}
-              onClick={() => onSelectRemote(remote.id)}
+              className={`sidebar-item sidebar-item-with-menu ${(isExplorerActive && activeRemoteId === remote.id) ? 'active' : ''}`}
+              onClick={() => { setOpenRemoteMenuId(null); onSelectRemote(remote.id) }}
               title={remote.url}
+              style={{ position: 'relative' }}
             >
               <div className="sidebar-item-icon">🌐</div>
               <div className="sidebar-item-info">
                 <div className="sidebar-item-name">{remote.name}</div>
                 <div className="sidebar-item-sub">{remote.url}</div>
               </div>
+
+              {/* Options button */}
+              <button
+                className="sidebar-item-menu-btn"
+                title="Opciones"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setOpenRemoteMenuId(openRemoteMenuId === remote.id ? null : remote.id)
+                }}
+              >
+                ···
+              </button>
+
+              {/* Dropdown menu */}
+              {openRemoteMenuId === remote.id && (
+                <div className="sidebar-item-dropdown" ref={remoteMenuRef}>
+                  <button
+                    className="sidebar-dropdown-item"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setOpenRemoteMenuId(null)
+                      onRenameRemote(remote)
+                    }}
+                  >
+                    ✏️ Renombrar
+                  </button>
+                  <div className="sidebar-dropdown-divider" />
+                  <button
+                    className="sidebar-dropdown-item sidebar-dropdown-item-danger"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setOpenRemoteMenuId(null)
+                      onDeleteRemote(remote)
+                    }}
+                  >
+                    🗑 Eliminar servidor
+                  </button>
+                </div>
+              )}
             </div>
           ))
         )}

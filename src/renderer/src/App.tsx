@@ -17,6 +17,8 @@ declare global {
       listRemotes: () => Promise<RemoteServer[]>
       saveRemote: (remote: { name: string; url: string }) => Promise<RemoteServer>
       selectRemote: (remoteId: string) => Promise<RemoteServer>
+      deleteRemote: (remoteId: string) => Promise<boolean>
+      renameRemote: (remoteId: string, name: string, url?: string) => Promise<RemoteServer>
       listLocalRepos: () => Promise<LocalRepo[]>
       getBasePath: () => Promise<string>
       deleteRepo: (repoPath: string) => Promise<void>
@@ -85,6 +87,10 @@ export default function App() {
   const [addRemoteUrl, setAddRemoteUrl] = useState('')
   const [addRemoteName, setAddRemoteName] = useState('')
   const [repoToDelete, setRepoToDelete] = useState<LocalRepo | null>(null)
+  const [remoteToDelete, setRemoteToDelete] = useState<RemoteServer | null>(null)
+  const [remoteToRename, setRemoteToRename] = useState<RemoteServer | null>(null)
+  const [renameRemoteName, setRenameRemoteName] = useState('')
+  const [renameRemoteUrl, setRenameRemoteUrl] = useState('')
   const [availableEditors, setAvailableEditors] = useState<EditorOption[]>([])
 
   const toast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -218,6 +224,19 @@ export default function App() {
     setShowAuthDialog(true)
   }
 
+  const handleLogout = async () => {
+    try {
+      await window.svn.clearCredentials()
+      setCredentials(null)
+      const activeRemoteUrl = remoteServers.find((r) => r.id === activeRemoteId)?.url
+      setAuthInitialServerUrl(activeRemoteUrl || authInitialServerUrl || DEFAULT_SERVER_URL)
+      setShowAuthDialog(true)
+      toast('Sesión cerrada. Inicia con otra cuenta.', 'info')
+    } catch (err: any) {
+      toast(err.message || 'No se pudo cerrar la sesión', 'error')
+    }
+  }
+
   const openExplorer = () => {
     setActiveTab('explorer')
     if (!credentials) setShowAuthDialog(true)
@@ -285,6 +304,51 @@ export default function App() {
     }
   }
 
+  const handleDeleteRemote = (remote: RemoteServer) => setRemoteToDelete(remote)
+
+  const confirmDeleteRemote = async () => {
+    if (!remoteToDelete) return
+    try {
+      await window.svn.deleteRemote(remoteToDelete.id)
+      if (activeRemoteId === remoteToDelete.id) {
+        setActiveRemoteId(null)
+        setActiveTab('changes')
+      }
+      await refreshRemotes()
+      toast(`Servidor "${remoteToDelete.name}" eliminado`, 'success')
+    } catch (err: any) {
+      toast(err.message || 'Error al eliminar el servidor', 'error')
+    } finally {
+      setRemoteToDelete(null)
+    }
+  }
+
+  const handleRenameRemote = (remote: RemoteServer) => {
+    setRemoteToRename(remote)
+    setRenameRemoteName(remote.name)
+    setRenameRemoteUrl(remote.url)
+  }
+
+  const confirmRenameRemote = async () => {
+    if (!remoteToRename) return
+    const name = renameRemoteName.trim()
+    const url = renameRemoteUrl.trim()
+    if (!name) { toast('El nombre no puede estar vacío', 'error'); return }
+    if (!url) { toast('La URL no puede estar vacía', 'error'); return }
+    try {
+      await window.svn.renameRemote(remoteToRename.id, name, url)
+      await refreshRemotes()
+      if (url !== remoteToRename.url) setAuthInitialServerUrl(url)
+      toast(`Servidor actualizado`, 'success')
+    } catch (err: any) {
+      toast(err.message || 'Error al actualizar el servidor', 'error')
+    } finally {
+      setRemoteToRename(null)
+      setRenameRemoteName('')
+      setRenameRemoteUrl('')
+    }
+  }
+
   const handleDeleteRepo = (repo: LocalRepo) => setRepoToDelete(repo)
 
   const handleOpenInEditor = async (editorId: EditorId, repoPath: string) => {
@@ -323,7 +387,7 @@ export default function App() {
       <div className="titlebar">
         <span className="titlebar-title">JaviSVN</span>
         {svnVersion && (
-          <span style={{ marginLeft: 'auto', fontSize: 10, color: '#768390' }}>
+          <span className="titlebar-version">
             SVN {svnVersion}
           </span>
         )}
@@ -345,6 +409,8 @@ export default function App() {
           onOpenFolder={(path) => window.svn.openFolder(path)}
           availableEditors={availableEditors}
           onOpenInEditor={handleOpenInEditor}
+          onDeleteRemote={handleDeleteRemote}
+          onRenameRemote={handleRenameRemote}
         />
 
         {/* Main area */}
@@ -356,6 +422,7 @@ export default function App() {
               onSaveRemote={handleSaveRemote}
               onCheckoutDone={handleCheckoutDone}
               onRequestCredentials={handleRequestCredentials}
+              onLogout={handleLogout}
               toast={toast}
             />
           ) : selectedRepo ? (
@@ -401,18 +468,22 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Content */}
+              {/* Content — wrapped in tab-content for fade-in animation on tab switch */}
               {activeTab === 'changes' && (
-                <ChangesView
-                  repo={selectedRepo}
-                  changes={changes}
-                  loading={loadingChanges}
-                  onRefresh={loadChanges}
-                  toast={toast}
-                />
+                <div key="changes" className="tab-content">
+                  <ChangesView
+                    repo={selectedRepo}
+                    changes={changes}
+                    loading={loadingChanges}
+                    onRefresh={loadChanges}
+                    toast={toast}
+                  />
+                </div>
               )}
               {activeTab === 'history' && (
-                <HistoryView repo={selectedRepo} toast={toast} />
+                <div key="history" className="tab-content">
+                  <HistoryView repo={selectedRepo} toast={toast} />
+                </div>
               )}
             </>
           ) : (
@@ -459,11 +530,16 @@ export default function App() {
       )}
 
       {/* Toasts */}
-      {toasts.map((t) => (
-        <div key={t.id} className={`toast ${t.type}`}>
-          {t.message}
-        </div>
-      ))}
+      <div className="toast-container">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast ${t.type}`}>
+            <span className="toast-icon">
+              {t.type === 'success' ? '✓' : t.type === 'error' ? '✕' : 'ℹ'}
+            </span>
+            {t.message}
+          </div>
+        ))}
+      </div>
 
       {/* Delete repo confirmation */}
       {repoToDelete && (
@@ -479,6 +555,60 @@ export default function App() {
             <div className="dialog-actions">
               <button className="btn btn-default" onClick={() => setRepoToDelete(null)}>Cancelar</button>
               <button className="btn btn-danger" onClick={confirmDeleteRepo}>Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete remote confirmation */}
+      {remoteToDelete && (
+        <div className="overlay">
+          <div className="dialog" style={{ width: 400 }}>
+            <div className="dialog-title">🗑 Eliminar servidor remoto</div>
+            <p style={{ fontSize: 13, color: 'var(--text2)', margin: '0 0 8px' }}>
+              ¿Eliminar <strong style={{ color: 'var(--text1)' }}>{remoteToDelete.name}</strong>?
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--text2)', margin: '0 0 16px' }}>
+              Solo se elimina de la lista de favoritos. El repositorio en el servidor SVN no se verá afectado.
+            </p>
+            <div className="dialog-actions">
+              <button className="btn btn-default" onClick={() => setRemoteToDelete(null)}>Cancelar</button>
+              <button className="btn btn-danger" onClick={confirmDeleteRemote}>Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename remote dialog */}
+      {remoteToRename && (
+        <div className="overlay">
+          <div className="dialog" style={{ width: 480 }}>
+            <div className="dialog-title">✏️ Editar servidor</div>
+            <div className="form-field">
+              <label className="form-label">Nombre</label>
+              <input
+                className="form-input"
+                value={renameRemoteName}
+                onChange={(e) => setRenameRemoteName(e.target.value)}
+                autoFocus
+                onKeyDown={(e) => { if (e.key === 'Enter') confirmRenameRemote(); if (e.key === 'Escape') setRemoteToRename(null) }}
+              />
+            </div>
+            <div className="form-field">
+              <label className="form-label">URL</label>
+              <input
+                className="form-input"
+                value={renameRemoteUrl}
+                onChange={(e) => setRenameRemoteUrl(e.target.value)}
+                placeholder="https://servidor/svn"
+                onKeyDown={(e) => { if (e.key === 'Enter') confirmRenameRemote(); if (e.key === 'Escape') setRemoteToRename(null) }}
+              />
+            </div>
+            <div className="dialog-actions">
+              <button className="btn btn-default" onClick={() => setRemoteToRename(null)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={confirmRenameRemote} disabled={!renameRemoteName.trim() || !renameRemoteUrl.trim()}>
+                Guardar
+              </button>
             </div>
           </div>
         </div>

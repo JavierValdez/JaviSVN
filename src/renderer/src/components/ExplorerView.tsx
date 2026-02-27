@@ -8,6 +8,7 @@ interface Props {
   onSaveRemote: (name: string, url: string) => Promise<void>
   onCheckoutDone: () => void
   onRequestCredentials: (serverUrl?: string) => void
+  onLogout: () => Promise<void>
   toast: (msg: string, type?: 'success' | 'error' | 'info') => void
 }
 
@@ -169,6 +170,7 @@ export default function ExplorerView({
   onSaveRemote,
   onCheckoutDone,
   onRequestCredentials,
+  onLogout,
   toast
 }: Props) {
   const [serverUrl, setServerUrl] = useState('')
@@ -905,10 +907,18 @@ export default function ExplorerView({
         {isExpanded && (isLoadingChildren || hasLoadedChildren) && (
           <div className="tree-children">
             {isLoadingChildren ? (
-              <div className="tree-loading-row">
-                <div className="spinner tree-loading-spinner" />
-                <span>Cargando contenido...</span>
-              </div>
+              <>
+                {[58, 42, 70, 35].map((w, i) => (
+                  <div key={i} className="tree-skeleton-row">
+                    <div className="tree-skeleton-chevron" />
+                    <div className="tree-skeleton-icon" />
+                    <div className="tree-skeleton-body">
+                      <div className="tree-skeleton-line wide" style={{ width: `${w}%` }} />
+                      <div className={`tree-skeleton-line ${i % 2 === 0 ? 'medium' : 'narrow'}`} />
+                    </div>
+                  </div>
+                ))}
+              </>
             ) : children.length === 0 ? (
               <div style={{ padding: '4px 16px', fontSize: 12, color: 'var(--text3)' }}>
                 (directorio vacío)
@@ -951,9 +961,18 @@ export default function ExplorerView({
             ⚠️ Sin credenciales
           </button>
         ) : (
-          <span className="explorer-toolbar-user">
-            👤 {credentials.username}
-          </span>
+          <>
+            <span className="explorer-toolbar-user">
+              👤 {credentials.username}
+            </span>
+            <button
+              className="btn btn-ghost"
+              onClick={onLogout}
+              title="Cerrar sesión y cambiar cuenta"
+            >
+              Cerrar sesión
+            </button>
+          </>
         )}
         <button
           className="btn btn-primary"

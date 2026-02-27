@@ -11,6 +11,8 @@ const svnAPI = {
   listRemotes: () => ipcRenderer.invoke('remotes:list'),
   saveRemote: (remote: { name: string; url: string }) => ipcRenderer.invoke('remotes:save', remote),
   selectRemote: (remoteId: string) => ipcRenderer.invoke('remotes:select', remoteId),
+  deleteRemote: (remoteId: string) => ipcRenderer.invoke('remotes:delete', remoteId),
+  renameRemote: (remoteId: string, name: string, url?: string) => ipcRenderer.invoke('remotes:rename', remoteId, name, url),
 
   // Local repos
   listLocalRepos: () => ipcRenderer.invoke('repos:list'),
@@ -33,6 +35,8 @@ const svnAPI = {
   svnExport: (url: string, targetPath: string) => ipcRenderer.invoke('svn:export', url, targetPath),
   pickExportFolder: () => ipcRenderer.invoke('dialog:pickExportFolder'),
   ping: (url: string) => ipcRenderer.invoke('svn:ping', url),
+  pingWithCreds: (creds: { url: string; username: string; password: string }) =>
+    ipcRenderer.invoke('svn:pingWithCreds', creds),
   getVersion: () => ipcRenderer.invoke('svn:version'),
   getBinPath: () => ipcRenderer.invoke('svn:getBinPath'),
   setBinPath: (binPath: string) => ipcRenderer.invoke('svn:setBinPath', binPath),

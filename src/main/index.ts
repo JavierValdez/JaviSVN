@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } from 'electron'
 import { join } from 'path'
 import { createRequire } from 'module'
 import { spawn, spawnSync } from 'child_process'
@@ -65,10 +65,40 @@ interface StoredRemote {
   createdAt: string
 }
 
-function getStoredCredentials(): { username?: string; password?: string; serverUrl?: string } | null {
-  const creds = storeGet('credentials')
-  if (!creds || typeof creds !== 'object') return null
-  return creds as { username?: string; password?: string; serverUrl?: string }
+function encryptPassword(password: string): string {
+  if (!safeStorage.isEncryptionAvailable()) return password
+  return safeStorage.encryptString(password).toString('base64')
+}
+
+function decryptPassword(value: string): string {
+  if (!safeStorage.isEncryptionAvailable()) return value
+  try {
+    return safeStorage.decryptString(Buffer.from(value, 'base64'))
+  } catch {
+    return value // fallback: ya es texto plano (caso de migración)
+  }
+}
+
+function writeStoredCredentials(creds: { username: string; password: string; serverUrl: string }): void {
+  const passwordEncrypted = encryptPassword(creds.password)
+  storeSet('credentials', { username: creds.username, passwordEncrypted, serverUrl: creds.serverUrl })
+}
+
+function getStoredCredentials(): { username: string; password: string; serverUrl: string } | null {
+  const stored = storeGet('credentials')
+  if (!stored || typeof stored !== 'object') return null
+
+  let password: string
+  if (stored.passwordEncrypted) {
+    password = decryptPassword(stored.passwordEncrypted)
+  } else if (stored.password) {
+    // Migración automática: texto plano → cifrado
+    password = stored.password
+    writeStoredCredentials({ username: stored.username || '', password, serverUrl: stored.serverUrl || '' })
+  } else {
+    return null
+  }
+  return { username: stored.username || '', password, serverUrl: stored.serverUrl || '' }
 }
 
 function getCurrentServerUrl(): string {
@@ -375,7 +405,7 @@ interface RunSvnOptions {
 }
 
 function getSvnAuthArgs(): string[] {
-  const creds = storeGet('credentials') as { username: string; password: string } | undefined
+  const creds = getStoredCredentials()
   const args = [
     '--non-interactive',
     '--trust-server-cert',
@@ -547,11 +577,11 @@ function buildRemoteUrl(parentUrl: string, name: string): string {
 
 // ─── IPC: Credentials ─────────────────────────────────────────────────────────
 ipcMain.handle('creds:get', () => {
-  return storeGet('credentials') || null
+  return getStoredCredentials() || null
 })
 
 ipcMain.handle('creds:set', (_e, creds: { username: string; password: string; serverUrl: string }) => {
-  storeSet('credentials', creds)
+  writeStoredCredentials(creds)
   if (creds.serverUrl?.trim()) setCurrentServerUrl(creds.serverUrl.trim())
   return true
 })
@@ -623,6 +653,33 @@ ipcMain.handle('remotes:select', (_e, remoteId: string) => {
 
   setCurrentServerUrl(selected.url)
   return { ...selected, active: true }
+})
+
+ipcMain.handle('remotes:delete', (_e, remoteId: string) => {
+  const id = (remoteId || '').trim()
+  if (!id) throw new Error('Remote inválido')
+
+  const remotes = ensureRemotesSeeded()
+  const next = remotes.filter((r) => r.id !== id)
+  saveStoredRemotes(next)
+  return true
+})
+
+ipcMain.handle('remotes:rename', (_e, remoteId: string, name: string, url?: string) => {
+  const id = (remoteId || '').trim()
+  const newName = (name || '').trim()
+  if (!id) throw new Error('Remote inválido')
+  if (!newName) throw new Error('El nombre es requerido')
+
+  const remotes = ensureRemotesSeeded()
+  const remote = remotes.find((r) => r.id === id)
+  if (!remote) throw new Error('Repositorio remoto no encontrado')
+
+  const newUrl = (url || '').trim() || remote.url
+  const next = remotes.map((r) => (r.id === id ? { ...r, name: newName, url: newUrl } : r))
+  saveStoredRemotes(next)
+  if (remote.url === getCurrentServerUrl()) setCurrentServerUrl(newUrl)
+  return { ...remote, name: newName, url: newUrl }
 })
 
 // ─── IPC: SVN binary override (legacy compatibility) ────────────────────────
@@ -1325,6 +1382,27 @@ ipcMain.handle('dialog:openInEditor', async (_e, editorId: string, repoPath: str
 ipcMain.handle('svn:ping', async (_e, url: string) => {
   try {
     await runSvn(['info', '--xml', url], { timeoutMs: 15000 })
+    return { ok: true }
+  } catch (err: any) {
+    const msg = err.message || ''
+    if (msg.includes('Authentication') || msg.includes('authorization') || msg.includes('E170001')) {
+      return { ok: false, authError: true, message: msg }
+    }
+    return { ok: false, authError: false, message: msg }
+  }
+})
+
+// Ping usando credenciales inline — sin persistir en el store
+ipcMain.handle('svn:pingWithCreds', async (_e, creds: { url: string; username: string; password: string }) => {
+  const inlineAuthArgs = [
+    '--non-interactive',
+    '--trust-server-cert',
+    '--trust-server-cert-failures=unknown-ca,cn-mismatch,expired,not-yet-valid,other',
+    '--username', creds.username,
+    '--password', creds.password
+  ]
+  try {
+    await runSvn(['info', '--xml', creds.url, ...inlineAuthArgs], { skipAuth: true, timeoutMs: 15000 })
     return { ok: true }
   } catch (err: any) {
     const msg = err.message || ''

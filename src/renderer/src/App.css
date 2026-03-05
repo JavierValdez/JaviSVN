@@ -259,50 +259,35 @@ body { overflow: hidden; }
 
 .sidebar-footer .btn { width: 100%; }
 
-.sidebar-update-footer {
-  padding: 8px 10px;
-  border-top: 1px solid rgba(255,255,255,0.06);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.sidebar-update-badge {
+.sidebar-update-chip {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  color: rgba(255,255,255,0.5);
   font-size: 11px;
-  font-weight: 600;
-  color: #60a5fa;
-  padding: 2px 0;
+  line-height: 1;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
 }
 
-.sidebar-update-btn {
-  font-size: 11px;
-  padding: 4px 8px;
+.sidebar-update-chip:hover {
+  background: rgba(255,255,255,0.15);
+  color: rgba(255,255,255,0.85);
 }
 
-.sidebar-update-link {
-  font-size: 11px;
-  color: rgba(255,255,255,0.45);
-  padding: 2px 0;
-  text-align: left;
-  background: none;
-  border: none;
+.sidebar-update-chip-new {
+  background: rgba(96,165,250,0.18);
+  border-color: rgba(96,165,250,0.4);
+  color: #93c5fd;
+  animation: pulse 2s infinite;
 }
 
-.sidebar-update-link:hover {
-  color: rgba(255,255,255,0.75);
-}
-
-.sidebar-update-checking {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: rgba(255,255,255,0.45);
-}
-
-.sidebar-update-version {
-  font-size: 10px;
-  color: rgba(255,255,255,0.25);
+.sidebar-update-chip-new:hover {
+  background: rgba(96,165,250,0.3);
+  color: #bfdbfe;
 }
 
 /* ── Main Content ──────────────────────────────────────────────────── */

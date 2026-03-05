@@ -88,6 +88,27 @@ export default function Sidebar({
       <div className="sidebar-header">
         <img src={appIcon} alt="JaviSVN" className="sidebar-logo" />
         <div className="sidebar-appname">JaviSVN</div>
+        {appUpdateState && appUpdateState.stage !== 'unsupported' && (
+          appUpdateState.stage === 'available' ? (
+            <button
+              className="sidebar-update-chip sidebar-update-chip-new"
+              onClick={onDownloadUpdate}
+              title={`v${appUpdateState.latestVersion} disponible`}
+            >
+              🆕
+            </button>
+          ) : appUpdateState.stage === 'checking' ? (
+            <span className="spinner" style={{ width: 11, height: 11, marginLeft: 'auto', flexShrink: 0 }} />
+          ) : (
+            <button
+              className="sidebar-update-chip"
+              onClick={onCheckForUpdates}
+              title={appUpdateState.stage === 'error' ? `Error: ${appUpdateState.error}` : 'Buscar actualizaciones'}
+            >
+              {appUpdateState.stage === 'error' ? '⚠️' : '↑'}
+            </button>
+          )
+        )}
       </div>
 
       {/* Repos section */}
@@ -256,33 +277,6 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* Update footer */}
-      {appUpdateState && appUpdateState.stage !== 'unsupported' && (
-        <div className="sidebar-update-footer">
-          {appUpdateState.stage === 'available' ? (
-            <>
-              <div className="sidebar-update-badge">🆕 v{appUpdateState.latestVersion} disponible</div>
-              <button className="btn btn-primary sidebar-update-btn" onClick={onDownloadUpdate}>
-                Descargar actualización
-              </button>
-            </>
-          ) : appUpdateState.stage === 'checking' ? (
-            <div className="sidebar-update-checking">
-              <span className="spinner" style={{ width: 12, height: 12 }} />
-              <span>Buscando actualizaciones…</span>
-            </div>
-          ) : appUpdateState.stage === 'error' ? (
-            <button className="btn btn-ghost sidebar-update-link" onClick={onCheckForUpdates} title={appUpdateState.error || ''}>
-              ⚠️ Error al verificar · Reintentar
-            </button>
-          ) : (
-            <button className="btn btn-ghost sidebar-update-link" onClick={onCheckForUpdates}>
-              Buscar actualizaciones
-            </button>
-          )}
-          <div className="sidebar-update-version">v{appUpdateState.currentVersion}</div>
-        </div>
-      )}
     </div>
   )
 }

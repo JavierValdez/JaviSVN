@@ -103,6 +103,16 @@ const svnAPI = {
     const handler = (_: any, msg: string) => cb(msg)
     ipcRenderer.on('svn:export-progress', handler)
     return () => ipcRenderer.removeListener('svn:export-progress', handler)
+  },
+
+  // App updates
+  getUpdateState: () => ipcRenderer.invoke('appUpdate:getState'),
+  checkForUpdates: () => ipcRenderer.invoke('appUpdate:check'),
+  downloadUpdate: () => ipcRenderer.invoke('appUpdate:download'),
+  onAppUpdateState: (cb: (state: any) => void) => {
+    const handler = (_: any, state: any) => cb(state)
+    ipcRenderer.on('appUpdate:state', handler)
+    return () => ipcRenderer.removeListener('appUpdate:state', handler)
   }
 }
 

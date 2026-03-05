@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } from 'electron'
+import { setupAppUpdater } from './updater'
 import { join } from 'path'
 import { createRequire } from 'module'
 import { spawn, spawnSync } from 'child_process'
@@ -384,6 +385,7 @@ app.whenReady().then(() => {
   }
 
   createWindow()
+  setupAppUpdater(mainWindow)
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

@@ -6,6 +6,22 @@ import ExplorerView from './components/ExplorerView'
 import HistoryView from './components/HistoryView'
 import AuthDialog from './components/AuthDialog'
 
+export interface AppUpdateState {
+  stage: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error' | 'unsupported'
+  currentVersion: string
+  autoUpdatesEnabled: boolean
+  mode: 'manual' | 'unsupported'
+  latestVersion: string | null
+  downloadedVersion: string | null
+  progressPercent: number | null
+  lastCheckedAt: string | null
+  releaseName: string | null
+  releaseDate: string | null
+  releaseNotes: string | null
+  downloadUrl: string | null
+  error: string | null
+}
+
 declare global {
   interface Window {
     svn: {
@@ -57,6 +73,10 @@ declare global {
       onUpdateProgress: (cb: (msg: string) => void) => () => void
       onInstallProgress: (cb: (msg: string) => void) => () => void
       onExportProgress: (cb: (msg: string) => void) => () => void
+      getUpdateState: () => Promise<AppUpdateState>
+      checkForUpdates: () => Promise<AppUpdateState>
+      downloadUpdate: () => Promise<AppUpdateState>
+      onAppUpdateState: (cb: (state: AppUpdateState) => void) => () => void
     }
   }
 }
@@ -92,6 +112,7 @@ export default function App() {
   const [renameRemoteName, setRenameRemoteName] = useState('')
   const [renameRemoteUrl, setRenameRemoteUrl] = useState('')
   const [availableEditors, setAvailableEditors] = useState<EditorOption[]>([])
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
 
   const toast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now()
@@ -129,12 +150,22 @@ export default function App() {
         const ver = await window.svn.getVersion()
         setSvnVersion(ver.version)
         if (ver.version === null) setSvnMissing(true)
+
+        try {
+          const updateSt = await window.svn.getUpdateState()
+          setAppUpdateState(updateSt)
+        } catch {
+          // updater not available
+        }
       } catch (err: any) {
         console.error(err)
         toast('No se pudo inicializar la API de SVN. Abre la app desde Electron.', 'error')
       }
     }
     init()
+
+    const unsubUpdate = window.svn.onAppUpdateState?.((state) => setAppUpdateState(state))
+    return () => { unsubUpdate?.() }
   }, [toast])
 
   // Load changes when repo changes
@@ -411,6 +442,9 @@ export default function App() {
           onOpenInEditor={handleOpenInEditor}
           onDeleteRemote={handleDeleteRemote}
           onRenameRemote={handleRenameRemote}
+          appUpdateState={appUpdateState}
+          onCheckForUpdates={() => window.svn.checkForUpdates().then(setAppUpdateState).catch(() => {})}
+          onDownloadUpdate={() => window.svn.downloadUpdate().then(setAppUpdateState).catch(() => {})}
         />
 
         {/* Main area */}

@@ -259,6 +259,52 @@ body { overflow: hidden; }
 
 .sidebar-footer .btn { width: 100%; }
 
+.sidebar-update-footer {
+  padding: 8px 10px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-update-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #60a5fa;
+  padding: 2px 0;
+}
+
+.sidebar-update-btn {
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.sidebar-update-link {
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+  padding: 2px 0;
+  text-align: left;
+  background: none;
+  border: none;
+}
+
+.sidebar-update-link:hover {
+  color: rgba(255,255,255,0.75);
+}
+
+.sidebar-update-checking {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.45);
+}
+
+.sidebar-update-version {
+  font-size: 10px;
+  color: rgba(255,255,255,0.25);
+}
+
 /* ── Main Content ──────────────────────────────────────────────────── */
 .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 

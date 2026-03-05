@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { EditorId, EditorOption, LocalRepo, RemoteServer } from '../types/svn'
+import { AppUpdateState } from '../App'
 import appIcon from '../assets/icon.png'
 
 interface Props {
@@ -18,6 +19,9 @@ interface Props {
   onOpenInEditor: (editorId: EditorId, path: string) => void
   onDeleteRemote: (remote: RemoteServer) => void
   onRenameRemote: (remote: RemoteServer) => void
+  appUpdateState: AppUpdateState | null
+  onCheckForUpdates: () => void
+  onDownloadUpdate: () => void
 }
 
 function timeAgo(dateStr: string): string {
@@ -46,7 +50,10 @@ export default function Sidebar({
   availableEditors,
   onOpenInEditor,
   onDeleteRemote,
-  onRenameRemote
+  onRenameRemote,
+  appUpdateState,
+  onCheckForUpdates,
+  onDownloadUpdate
 }: Props) {
   const [openMenuPath, setOpenMenuPath] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -248,6 +255,34 @@ export default function Sidebar({
           </div>
         </div>
       </div>
+
+      {/* Update footer */}
+      {appUpdateState && appUpdateState.stage !== 'unsupported' && (
+        <div className="sidebar-update-footer">
+          {appUpdateState.stage === 'available' ? (
+            <>
+              <div className="sidebar-update-badge">🆕 v{appUpdateState.latestVersion} disponible</div>
+              <button className="btn btn-primary sidebar-update-btn" onClick={onDownloadUpdate}>
+                Descargar actualización
+              </button>
+            </>
+          ) : appUpdateState.stage === 'checking' ? (
+            <div className="sidebar-update-checking">
+              <span className="spinner" style={{ width: 12, height: 12 }} />
+              <span>Buscando actualizaciones…</span>
+            </div>
+          ) : appUpdateState.stage === 'error' ? (
+            <button className="btn btn-ghost sidebar-update-link" onClick={onCheckForUpdates} title={appUpdateState.error || ''}>
+              ⚠️ Error al verificar · Reintentar
+            </button>
+          ) : (
+            <button className="btn btn-ghost sidebar-update-link" onClick={onCheckForUpdates}>
+              Buscar actualizaciones
+            </button>
+          )}
+          <div className="sidebar-update-version">v{appUpdateState.currentVersion}</div>
+        </div>
+      )}
     </div>
   )
 }

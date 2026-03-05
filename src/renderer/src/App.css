@@ -92,6 +92,50 @@ body { overflow: hidden; }
   animation: fadeSlideUp 0.5s ease 0.3s both;
 }
 
+.titlebar-update-area {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  -webkit-app-region: no-drag;
+  animation: fadeSlideUp 0.5s ease 0.3s both;
+}
+
+.titlebar-app-version {
+  font-size: 10px;
+  color: #5a6570;
+  font-family: 'SF Mono', Menlo, monospace;
+}
+
+.titlebar-update-chip {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 5px;
+  color: rgba(255,255,255,0.4);
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.titlebar-update-chip:hover {
+  background: rgba(255,255,255,0.14);
+  color: rgba(255,255,255,0.8);
+}
+
+.titlebar-update-chip-new {
+  background: rgba(96,165,250,0.18);
+  border-color: rgba(96,165,250,0.4);
+  color: #93c5fd;
+  animation: pulse 2s infinite;
+}
+
+.titlebar-update-chip-new:hover {
+  background: rgba(96,165,250,0.3);
+  color: #bfdbfe;
+}
+
 .app-body { display: flex; flex: 1; overflow: hidden; }
 
 /* ── Sidebar ───────────────────────────────────────────────────────── */
@@ -259,36 +303,6 @@ body { overflow: hidden; }
 
 .sidebar-footer .btn { width: 100%; }
 
-.sidebar-update-chip {
-  margin-left: auto;
-  flex-shrink: 0;
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 6px;
-  color: rgba(255,255,255,0.5);
-  font-size: 11px;
-  line-height: 1;
-  padding: 3px 6px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.sidebar-update-chip:hover {
-  background: rgba(255,255,255,0.15);
-  color: rgba(255,255,255,0.85);
-}
-
-.sidebar-update-chip-new {
-  background: rgba(96,165,250,0.18);
-  border-color: rgba(96,165,250,0.4);
-  color: #93c5fd;
-  animation: pulse 2s infinite;
-}
-
-.sidebar-update-chip-new:hover {
-  background: rgba(96,165,250,0.3);
-  color: #bfdbfe;
-}
 
 /* ── Main Content ──────────────────────────────────────────────────── */
 .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }

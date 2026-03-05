@@ -88,27 +88,6 @@ export default function Sidebar({
       <div className="sidebar-header">
         <img src={appIcon} alt="JaviSVN" className="sidebar-logo" />
         <div className="sidebar-appname">JaviSVN</div>
-        {appUpdateState && appUpdateState.stage !== 'unsupported' && (
-          appUpdateState.stage === 'available' ? (
-            <button
-              className="sidebar-update-chip sidebar-update-chip-new"
-              onClick={onDownloadUpdate}
-              title={`v${appUpdateState.latestVersion} disponible`}
-            >
-              🆕
-            </button>
-          ) : appUpdateState.stage === 'checking' ? (
-            <span className="spinner" style={{ width: 11, height: 11, marginLeft: 'auto', flexShrink: 0 }} />
-          ) : (
-            <button
-              className="sidebar-update-chip"
-              onClick={onCheckForUpdates}
-              title={appUpdateState.stage === 'error' ? `Error: ${appUpdateState.error}` : 'Buscar actualizaciones'}
-            >
-              {appUpdateState.stage === 'error' ? '⚠️' : '↑'}
-            </button>
-          )
-        )}
       </div>
 
       {/* Repos section */}

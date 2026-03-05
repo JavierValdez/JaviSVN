@@ -417,10 +417,29 @@ export default function App() {
       {/* Titlebar */}
       <div className="titlebar">
         <span className="titlebar-title">JaviSVN</span>
-        {svnVersion && (
-          <span className="titlebar-version">
-            SVN {svnVersion}
-          </span>
+        {appUpdateState && appUpdateState.stage !== 'unsupported' && (
+          <div className="titlebar-update-area">
+            <span className="titlebar-app-version">v{appUpdateState.currentVersion}</span>
+            {appUpdateState.stage === 'available' ? (
+              <button
+                className="titlebar-update-chip titlebar-update-chip-new"
+                onClick={() => window.svn.downloadUpdate().then(setAppUpdateState).catch(() => {})}
+                title={`v${appUpdateState.latestVersion} disponible — clic para descargar`}
+              >
+                🆕
+              </button>
+            ) : appUpdateState.stage === 'checking' ? (
+              <span className="spinner" style={{ width: 10, height: 10, flexShrink: 0 }} />
+            ) : (
+              <button
+                className="titlebar-update-chip"
+                onClick={() => window.svn.checkForUpdates().then(setAppUpdateState).catch(() => {})}
+                title={appUpdateState.stage === 'error' ? `Error: ${appUpdateState.error}` : 'Buscar actualizaciones'}
+              >
+                {appUpdateState.stage === 'error' ? '⚠️' : '↑'}
+              </button>
+            )}
+          </div>
         )}
       </div>
 

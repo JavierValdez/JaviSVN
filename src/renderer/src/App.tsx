@@ -57,6 +57,7 @@ declare global {
       update: (repoPath: string) => Promise<any>
       status: (repoPath: string) => Promise<FileChange[]>
       diff: (repoPath: string, filePath: string) => Promise<string>
+      fileContent: (repoPath: string, filePath: string) => Promise<string>
       revisionFileDiff: (repoPath: string, revision: number, svnPath: string) => Promise<string>
       commit: (repoPath: string, files: string[], message: string) => Promise<any>
       revert: (repoPath: string, files: string[]) => Promise<any>
@@ -77,6 +78,12 @@ declare global {
       checkForUpdates: () => Promise<AppUpdateState>
       downloadUpdate: () => Promise<AppUpdateState>
       onAppUpdateState: (cb: (state: AppUpdateState) => void) => () => void
+    }
+    appUpdate: {
+      getState: () => Promise<{ stage: string; latestVersion?: string; downloadUrl?: string }>
+      check: () => Promise<void>
+      download: () => Promise<void>
+      onState: (cb: (state: { stage: string; latestVersion?: string; downloadUrl?: string }) => void) => () => void
     }
   }
 }
@@ -414,6 +421,18 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* App update banner */}
+      {appUpdateState?.stage === 'available' && (
+        <div className="update-banner">
+          <span>🎉 Nueva versión {appUpdateState.latestVersion} disponible</span>
+          <button className="btn btn-primary" style={{ padding: '2px 12px', fontSize: 12 }} onClick={() => window.appUpdate.download()}>
+            Descargar
+          </button>
+          <button className="btn btn-default" style={{ padding: '2px 8px', fontSize: 12 }} onClick={() => setAppUpdateState(null)}>
+            ✕
+          </button>
+        </div>
+      )}
       {/* Titlebar */}
       <div className="titlebar">
         <span className="titlebar-title">JaviSVN</span>

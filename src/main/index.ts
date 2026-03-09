@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } from 'electron'
 import { setupAppUpdater } from './updater'
-import { join } from 'path'
+import { join, resolve, relative } from 'path'
 import { createRequire } from 'module'
 import { spawn, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
@@ -16,13 +16,34 @@ const isDev = process.env.NODE_ENV === 'development'
 // Set app name before ready so it shows correctly in the dock and menu bar
 app.name = 'JaviSVN'
 const DEFAULT_SERVER_URL = ''
-const DEFAULT_SVN_CANDIDATES = [
-  '/opt/homebrew/bin/svn',
-  '/usr/local/bin/svn',
-  '/usr/bin/svn',
-  '/opt/local/bin/svn',
-]
-const EXTRA_PATH_SEGMENTS = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+function getDefaultSvnCandidates(): string[] {
+  if (process.platform === 'win32') {
+    const pf   = process.env.ProgramFiles        || 'C:\\Program Files'
+    const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+    return [
+      join(pf,   'TortoiseSVN', 'bin', 'svn.exe'),
+      join(pf86, 'TortoiseSVN', 'bin', 'svn.exe'),
+      join(pf,   'SlikSvn', 'bin', 'svn.exe'),
+      join(pf,   'CollabNet Subversion Client', 'svn.exe'),
+      'svn.exe',
+    ]
+  }
+  return [
+    '/opt/homebrew/bin/svn',
+    '/usr/local/bin/svn',
+    '/usr/bin/svn',
+    '/opt/local/bin/svn',
+  ]
+}
+
+function getExtraPathSegments(): string {
+  if (process.platform === 'win32') {
+    const pf   = process.env.ProgramFiles        || 'C:\\Program Files'
+    const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+    return [join(pf, 'TortoiseSVN', 'bin'), join(pf86, 'TortoiseSVN', 'bin')].join(';')
+  }
+  return '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+}
 
 // ─── Simple JSON Store ────────────────────────────────────────────────────────
 function getStorePath(): string {
@@ -158,13 +179,20 @@ if (!existsSync(BASE_REPO_PATH)) {
 }
 
 // ─── Find svn binary ─────────────────────────────────────────────────────────
+function buildEnvWithExtraPath(): NodeJS.ProcessEnv {
+  const sep = process.platform === 'win32' ? ';' : ':'
+  const pathKey = process.platform === 'win32' ? 'Path' : 'PATH'
+  const extra = getExtraPathSegments()
+  const current = process.env[pathKey] || process.env.PATH || ''
+  const firstSegment = extra.split(sep)[0] || ''
+  const merged = (firstSegment && current.includes(firstSegment)) ? current : `${extra}${sep}${current}`
+  return { ...process.env, [pathKey]: merged, PATH: merged }
+}
+
 function canExecuteSvn(bin: string): boolean {
-  const extraPath = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-  const currentPath = process.env.PATH || ''
-  const mergedPath = currentPath.includes('/opt/homebrew/bin') ? currentPath : `${extraPath}:${currentPath}`
   try {
     const result = spawnSync(bin, ['--version', '--quiet'], {
-      env: { ...process.env, LANG: 'en_US.UTF-8', PATH: mergedPath },
+      env: { ...buildEnvWithExtraPath(), LANG: 'en_US.UTF-8' },
       encoding: 'utf-8',
       timeout: 4000
     })
@@ -179,19 +207,13 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((v) => Boolean(v && v.trim())))]
 }
 
-function buildEnvWithExtraPath(): NodeJS.ProcessEnv {
-  const currentPath = process.env.PATH || ''
-  const mergedPath = currentPath.includes('/opt/homebrew/bin')
-    ? currentPath
-    : `${EXTRA_PATH_SEGMENTS}:${currentPath}`
-  return { ...process.env, PATH: mergedPath }
-}
-
 function findSvnBin(preferred?: string): string {
-  // 1. Bundled binary (packaged app: Contents/Resources/bin/svn)
-  const bundledPackaged = join(process.resourcesPath || '', 'bin', 'svn')
-  // 2. Bundled binary (dev mode: project/resources/bin/svn)
-  const bundledDev = join(__dirname, '../../resources/bin/svn')
+  const ext = process.platform === 'win32' ? '.exe' : ''
+  const fallback = `svn${ext}`
+  // 1. Bundled binary (packaged app: Contents/Resources/bin/svn[.exe])
+  const bundledPackaged = join(process.resourcesPath || '', 'bin', `svn${ext}`)
+  // 2. Bundled binary (dev mode: project/resources/bin/svn[.exe])
+  const bundledDev = join(__dirname, `../../resources/bin/svn${ext}`)
 
   const preferredValues = [preferred || '', process.env.JAVISVN_SVN_BIN || '']
 
@@ -202,22 +224,22 @@ function findSvnBin(preferred?: string): string {
       ...preferredValues,
       bundledPackaged,
       bundledDev,
-      ...DEFAULT_SVN_CANDIDATES,
-      'svn'
+      ...getDefaultSvnCandidates(),
+      fallback
     ])
     : uniqueStrings([
       ...preferredValues,
-      ...DEFAULT_SVN_CANDIDATES,
+      ...getDefaultSvnCandidates(),
       bundledPackaged,
       bundledDev,
-      'svn'
+      fallback
     ])
 
   for (const c of candidates) {
-    if (c !== 'svn' && !existsSync(c)) continue
+    if (c !== fallback && !existsSync(c)) continue
     if (canExecuteSvn(c)) return c
   }
-  return 'svn'
+  return fallback
 }
 let SVN_BIN = findSvnBin((storeGet('svnBinPath') || '').toString())
 
@@ -310,15 +332,35 @@ function detectEditors(): DetectedEditor[] {
     .filter((x): x is DetectedEditor => x !== null)
 }
 
+function buildEditorLaunchEnv(): NodeJS.ProcessEnv {
+  const env = { ...buildEnvWithExtraPath() }
+
+  // Avoid leaking Electron/VS Code process state into a fresh VS Code launch.
+  for (const key of Object.keys(env)) {
+    if (key === 'ELECTRON_ENABLE_LOGGING' || key === 'ELECTRON_ENABLE_STACK_DUMPING') continue
+    if (key.startsWith('VSCODE_') || key.startsWith('ELECTRON_')) {
+      delete env[key]
+    }
+  }
+
+  return env
+}
+
 function runCommand(command: string, args: string[], options: { shell?: boolean } = {}): boolean {
-  const result = spawnSync(command, args, {
-    env: buildEnvWithExtraPath(),
-    stdio: 'ignore',
-    windowsHide: true,
-    shell: options.shell || false,
-    timeout: 10000
-  })
-  return !result.error && result.status === 0
+  try {
+    const proc = spawn(command, args, {
+      env: buildEditorLaunchEnv(),
+      stdio: 'ignore',
+      windowsHide: true,
+      shell: options.shell || false,
+      detached: true
+    })
+
+    proc.unref()
+    return Boolean(proc.pid)
+  } catch {
+    return false
+  }
 }
 
 function openRepoInEditor(editorId: SupportedEditorId, repoPath: string): void {
@@ -330,9 +372,15 @@ function openRepoInEditor(editorId: SupportedEditorId, repoPath: string): void {
   const editor = detectEditors().find((x) => x.id === editorId)
   if (!editor) throw new Error('Ese editor no está disponible en este equipo')
 
-  if (editor.command && runCommand(editor.command, [safePath], { shell: process.platform === 'win32' })) return
-  if (process.platform === 'darwin' && editor.macAppPath && runCommand('open', ['-a', editor.macAppPath, safePath])) return
-  if (process.platform === 'win32' && editor.winExecutablePath && runCommand(editor.winExecutablePath, [safePath])) return
+  // On Windows, prefer launching the detected .exe directly to avoid shell arg splitting
+  // when repository paths contain spaces.
+  if (process.platform === 'win32') {
+    if (editor.winExecutablePath && runCommand(editor.winExecutablePath, [safePath])) return
+    if (editor.command && runCommand(editor.command, [safePath], { shell: true })) return
+  } else {
+    if (editor.command && runCommand(editor.command, [safePath])) return
+    if (process.platform === 'darwin' && editor.macAppPath && runCommand('open', ['-a', editor.macAppPath, safePath])) return
+  }
 
   throw new Error(`No se pudo abrir el repositorio en ${editor.label}`)
 }
@@ -347,21 +395,34 @@ function createWindow(): void {
   ]
   const preloadPath = preloadCandidates.find((p) => existsSync(p)) || preloadCandidates[0]
 
+  const windowsIconCandidates = [
+    join(app.getAppPath(), 'resources', 'icon.ico'),
+    join(process.resourcesPath, 'icon.ico'),
+    join(__dirname, '../../resources/icon.ico')
+  ]
+  const windowsIconPath = process.platform === 'win32'
+    ? windowsIconCandidates.find((p) => existsSync(p))
+    : undefined
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
     minHeight: 600,
     show: false,
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     backgroundColor: '#ffffff',
+    ...(windowsIconPath ? { icon: windowsIconPath } : {}),
     webPreferences: {
       preload: preloadPath,
       sandbox: false
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow.show())
+  mainWindow.on('ready-to-show', () => {
+    mainWindow.show()
+    setupAppUpdater(mainWindow)
+  })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -439,7 +500,6 @@ function isLegacySslError(message: string): boolean {
 }
 
 function getLegacyOpenSslConfPath(): string | null {
-  if (process.platform === 'win32') return null
   try {
     const confPath = join(app.getPath('userData'), LEGACY_OPENSSL_CONF_NAME)
     if (!existsSync(confPath) || readFileSync(confPath, 'utf-8') !== LEGACY_OPENSSL_CONF) {
@@ -458,10 +518,7 @@ function runSvnOnce(
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const allArgs = options.skipAuth ? [...args] : [...args, ...getSvnAuthArgs()]
-    const extraPath = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-    const currentPath = process.env.PATH || ''
-    const mergedPath = currentPath.includes('/opt/homebrew/bin') ? currentPath : `${extraPath}:${currentPath}`
-    const env = { ...process.env, LANG: 'en_US.UTF-8', PATH: mergedPath } as NodeJS.ProcessEnv
+    const env = { ...buildEnvWithExtraPath(), LANG: 'en_US.UTF-8' } as NodeJS.ProcessEnv
     if (useLegacySsl) {
       const confPath = getLegacyOpenSslConfPath()
       if (confPath) env.OPENSSL_CONF = confPath
@@ -524,17 +581,19 @@ async function runSvn(
   args: string[],
   options: RunSvnOptions = {}
 ): Promise<{ stdout: string; stderr: string }> {
+  // Try legacy SSL first on every platform. This environment relies on
+  // TLS 1.0 + expired cert compatibility for target SVN servers.
+  const firstTryLegacy = options.forceLegacySsl !== false
   const shouldFallback = options.allowLegacySslFallback !== false
-  const firstTryLegacy = options.forceLegacySsl === true
 
   try {
     return await runSvnOnce(args, options, firstTryLegacy)
   } catch (err: any) {
     const message = String(err?.message || '')
-    if (!firstTryLegacy && shouldFallback && isLegacySslError(message)) {
-      return runSvnOnce(args, options, true)
+    if (firstTryLegacy || !shouldFallback || !isLegacySslError(message)) {
+      throw err
     }
-    throw err
+    return runSvnOnce(args, options, true)
   }
 }
 
@@ -859,14 +918,8 @@ async function runConcurrent(
 // Stream `svn cat <url>` and resolve true as soon as `query` is found; kills early
 function catSearchFile(fileUrl: string, query: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const extraPath = '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-    const currentPath = process.env.PATH || ''
-    const mergedPath = currentPath.includes('/opt/homebrew/bin')
-      ? currentPath
-      : `${extraPath}:${currentPath}`
-
     const proc = spawn(SVN_BIN, ['cat', fileUrl, ...getSvnAuthArgs()], {
-      env: { ...process.env, LANG: 'en_US.UTF-8', PATH: mergedPath }
+      env: { ...buildEnvWithExtraPath(), LANG: 'en_US.UTF-8' }
     })
 
     let buffer = ''
@@ -1172,9 +1225,9 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
   if (!target?.entry) return []
 
   const entries = Array.isArray(target.entry) ? target.entry : [target.entry]
-  return entries.map((e: any) => {
+  const baseChanges = entries.map((e: any) => {
     const item = e['wc-status']?.$?.item || '?'
-    const path = e.$?.path || ''
+    const path = String(e.$?.path || '').replace(/\\/g, '/')
     return {
       path,
       displayPath: path,
@@ -1182,6 +1235,85 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
       checked: item !== '?'
     }
   })
+
+  const expandedFromUnversionedDirs: Array<{ path: string; displayPath: string; status: string; checked: boolean }> = []
+
+  const walkUnversionedDir = (absDir: string, relDir: string) => {
+    let children: ReturnType<typeof readdirSync>
+    try {
+      children = readdirSync(absDir, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const child of children as any[]) {
+      if (child.name === '.svn') continue
+
+      const childAbs = join(absDir, child.name)
+      const childRel = join(relDir, child.name).replace(/\\/g, '/')
+
+      if (child.isDirectory?.()) {
+        expandedFromUnversionedDirs.push({
+          path: childRel,
+          displayPath: childRel,
+          status: '?',
+          checked: false
+        })
+        walkUnversionedDir(childAbs, childRel)
+      } else {
+        expandedFromUnversionedDirs.push({
+          path: childRel,
+          displayPath: childRel,
+          status: '?',
+          checked: false
+        })
+      }
+    }
+  }
+
+  for (const change of baseChanges) {
+    if (change.status !== '?') continue
+
+    const abs = resolve(repoPath, change.path)
+    try {
+      const st = statSync(abs)
+      if (st.isDirectory()) {
+        walkUnversionedDir(abs, change.path)
+      }
+    } catch {
+      // ignore invalid paths
+    }
+  }
+
+  const merged = new Map<string, { path: string; displayPath: string; status: string; checked: boolean }>()
+  for (const c of baseChanges) merged.set(c.path, c)
+  for (const c of expandedFromUnversionedDirs) {
+    if (!merged.has(c.path)) merged.set(c.path, c)
+  }
+
+  return Array.from(merged.values())
+})
+
+// ─── IPC: Local file content (for unversioned preview) ──────────────────────
+ipcMain.handle('svn:fileContent', async (_e, repoPath: string, filePath: string) => {
+  const repoAbs = resolve(repoPath)
+  const targetAbs = resolve(repoPath, filePath)
+  const rel = relative(repoAbs, targetAbs)
+
+  if (rel.startsWith('..') || rel.includes(':')) {
+    throw new Error('Ruta fuera del repositorio')
+  }
+
+  if (!existsSync(targetAbs)) return '(archivo no encontrado)'
+  const st = statSync(targetAbs)
+  if (!st.isFile()) return '(no es un archivo regular)'
+
+  try {
+    const text = readFileSync(targetAbs, 'utf-8')
+    return text || '(archivo vacío)'
+  } catch {
+    return '(no se pudo leer el contenido del archivo)'
+  }
 })
 
 function mapStatus(item: string): string {
@@ -1203,6 +1335,18 @@ ipcMain.handle('svn:diff', async (_e, repoPath: string, filePath: string) => {
     const { stdout } = await runSvn(['diff', filePath], { cwd: repoPath })
     return stdout || '(sin cambios)'
   } catch {
+    try {
+      const { stdout } = await runSvn(['status', '--xml', filePath], { cwd: repoPath })
+      const parsed = await parseXml(stdout)
+      const target = parsed.status?.target
+      const entry = Array.isArray(target?.entry) ? target.entry[0] : target?.entry
+      const item = entry?.['wc-status']?.$?.item || ''
+      if (item === 'unversioned') {
+        return '(archivo sin versionar: SVN no genera diff hasta hacer add/commit)'
+      }
+    } catch {
+      // ignore secondary error and fallback to generic message
+    }
     return '(no se pudo obtener el diff)'
   }
 })
@@ -1240,23 +1384,107 @@ ipcMain.handle('svn:commit', async (_e, repoPath: string, files: string[], messa
   const statusResult = await runSvn(['status', '--xml'], { cwd: repoPath })
   const parsed = await parseXml(statusResult.stdout)
   const target = parsed.status?.target
+
+  const normalizePathKey = (inputPath: string): string => {
+    const normalized = String(inputPath || '').replace(/\\/g, '/').trim()
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+  }
+
+  const selected = Array.from(new Set(files.map((f) => String(f || '').trim()).filter(Boolean)))
+  const selectedKeyToOriginal = new Map<string, string>()
+  selected.forEach((f) => selectedKeyToOriginal.set(normalizePathKey(f), f))
+
+  const statusByPathKey = new Map<string, string>()
+  const pathKeyToPath = new Map<string, string>()
   if (target?.entry) {
     const entries = Array.isArray(target.entry) ? target.entry : [target.entry]
-    const toAdd = entries
-      .filter((e: any) => {
-        const item = e['wc-status']?.$?.item
-        const p = e.$?.path
-        return item === 'unversioned' && files.includes(p)
-      })
-      .map((e: any) => e.$?.path)
+    for (const e of entries) {
+      const item = String(e['wc-status']?.$?.item || '')
+      const p = String(e.$?.path || '')
+      if (!p) continue
+      const key = normalizePathKey(p)
+      statusByPathKey.set(key, item)
+      pathKeyToPath.set(key, p)
+    }
+
+    const toAddSet = new Set<string>()
+
+    // 1) Explicitly unversioned entries reported by SVN status
+    for (const [pathKey, item] of statusByPathKey.entries()) {
+      if (item !== 'unversioned') continue
+      const selectedOriginal = selectedKeyToOriginal.get(pathKey)
+      if (selectedOriginal) toAddSet.add(selectedOriginal)
+    }
+
+    // 2) Expanded entries that may not appear in SVN XML (e.g. files inside new dirs)
+    for (const selectedPath of selected) {
+      const key = normalizePathKey(selectedPath)
+      const known = statusByPathKey.get(key)
+      if (known) continue
+
+      const abs = resolve(repoPath, selectedPath)
+      if (existsSync(abs)) {
+        toAddSet.add(selectedPath)
+      }
+    }
+
+    const toAdd = Array.from(toAddSet)
 
     if (toAdd.length > 0) {
-      await runSvn(['add', '--force', ...toAdd], { cwd: repoPath })
+      await runSvn(['add', '--force', '--parents', ...toAdd], { cwd: repoPath })
     }
+
+    // Re-read status after add so we can include any required added parent dirs
+    const statusAfterAdd = await runSvn(['status', '--xml'], { cwd: repoPath })
+    const parsedAfterAdd = await parseXml(statusAfterAdd.stdout)
+    const targetAfterAdd = parsedAfterAdd.status?.target
+    const statusAfterByPathKey = new Map<string, string>()
+    const pathAfterKeyToPath = new Map<string, string>()
+
+    if (targetAfterAdd?.entry) {
+      const entriesAfter = Array.isArray(targetAfterAdd.entry) ? targetAfterAdd.entry : [targetAfterAdd.entry]
+      for (const e of entriesAfter) {
+        const item = String(e['wc-status']?.$?.item || '')
+        const p = String(e.$?.path || '')
+        if (!p) continue
+        const key = normalizePathKey(p)
+        statusAfterByPathKey.set(key, item)
+        pathAfterKeyToPath.set(key, p)
+      }
+    }
+
+    const commitSet = new Set(selected)
+    const isPathAncestor = (ancestor: string, descendant: string) => {
+      const a = normalizePathKey(ancestor).replace(/\/+$/g, '')
+      const d = normalizePathKey(descendant)
+      return d === a || d.startsWith(`${a}/`)
+    }
+
+    // If a selected path is under a newly added parent dir, include that parent in commit targets.
+    for (const [key, item] of statusAfterByPathKey.entries()) {
+      if (item !== 'added') continue
+      const parentPath = pathAfterKeyToPath.get(key)
+      if (!parentPath) continue
+
+      for (const selectedPath of selected) {
+        if (isPathAncestor(parentPath, selectedPath) && normalizePathKey(parentPath) !== normalizePathKey(selectedPath)) {
+          commitSet.add(parentPath)
+          break
+        }
+      }
+    }
+
+    const commitTargets = Array.from(commitSet)
+
+    const { stdout } = await runSvn(
+      ['commit', ...commitTargets, '-m', message],
+      { cwd: repoPath }
+    )
+    return { success: true, output: stdout }
   }
 
   const { stdout } = await runSvn(
-    ['commit', ...files, '-m', message],
+    ['commit', ...selected, '-m', message],
     { cwd: repoPath }
   )
   return { success: true, output: stdout }
@@ -1427,6 +1655,10 @@ ipcMain.handle('svn:version', async () => {
 
 // ─── IPC: Install SVN via Homebrew (fallback) ────────────────────────────────
 ipcMain.handle('svn:install', async () => {
+  if (process.platform === 'win32') {
+    throw new Error('En Windows, JaviSVN incluye SVN integrado. Si hay problemas, descarga TortoiseSVN desde https://tortoisesvn.net')
+  }
+
   return new Promise((resolve, reject) => {
     const brewBin = existsSync('/opt/homebrew/bin/brew')
       ? '/opt/homebrew/bin/brew'

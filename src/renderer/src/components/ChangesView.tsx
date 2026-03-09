@@ -30,6 +30,16 @@ const STATUS_CLASS: Record<string, string> = {
   '!': 'status-D'
 }
 
+const STATUS_ICON: Record<string, string> = {
+  M: '✏️',
+  A: '➕',
+  D: '🗑️',
+  '?': '📄',
+  C: '⚠️',
+  R: '🔁',
+  '!': '❗'
+}
+
 export default function ChangesView({ repo, changes, loading, onRefresh, toast }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -38,6 +48,10 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   const [commitMsg, setCommitMsg] = useState('')
   const [committing, setCommitting] = useState(false)
   const [reverting, setReverting] = useState(false)
+
+  const selectedChange = selectedFile
+    ? changes.find((c) => c.path === selectedFile) || null
+    : null
 
   // Reset selection when repo or changes change
   useEffect(() => {
@@ -54,7 +68,14 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     setSelectedFile(filePath)
     setDiffLoading(true)
     try {
-      const d = await window.svn.diff(repo.path, filePath)
+      const current = changes.find((c) => c.path === filePath)
+      let d = ''
+      if (current?.status === '?') {
+        const content = await window.svn.fileContent(repo.path, filePath)
+        d = content || '(archivo vacío)'
+      } else {
+        d = await window.svn.diff(repo.path, filePath)
+      }
       setDiff(d)
     } catch {
       setDiff('(no se pudo obtener el diff)')
@@ -222,6 +243,12 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
 
       {/* Right: diff viewer */}
       <div className="diff-panel">
+        {selectedChange && (
+          <div className={`diff-status-chip ${STATUS_CLASS[selectedChange.status] || ''}`}>
+            <span>{STATUS_ICON[selectedChange.status] || '📄'}</span>
+            <span>{STATUS_LABEL[selectedChange.status] || selectedChange.status}</span>
+          </div>
+        )}
         {diffLoading ? (
           <div className="diff-empty">
             <div className="spinner spinner-lg" />

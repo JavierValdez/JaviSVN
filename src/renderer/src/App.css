@@ -59,6 +59,19 @@ body { overflow: hidden; }
 /* ── Layout ────────────────────────────────────────────────────────── */
 .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
+.update-banner {
+  background: #1a7f37;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  font-size: 13px;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+.update-banner span { flex: 1; }
+
 .titlebar {
   height: var(--titlebar-h);
   background: linear-gradient(180deg, #2d333b 0%, var(--sidebar-bg) 100%);
@@ -506,6 +519,25 @@ body { overflow: hidden; }
   background: var(--bg);
 }
 
+.diff-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 12px 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.diff-status-chip.status-M { color: var(--warning); }
+.diff-status-chip.status-A { color: var(--success); }
+.diff-status-chip.status-D { color: var(--danger); }
+.diff-status-chip.status-question { color: var(--text2); }
+.diff-status-chip.status-C { color: var(--danger); }
+.diff-status-chip.status-R { color: var(--accent); }
+
 .diff-empty {
   display: flex;
   flex-direction: column;
@@ -636,6 +668,58 @@ body { overflow: hidden; }
   min-width: 260px;
   font-size: 12px;
   font-family: 'SF Mono', Menlo, monospace;
+}
+
+/* ── Explorer column headers ─────────────────────────────────────── */
+.explorer-col-header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 20px;
+  height: 30px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  user-select: none;
+}
+
+.explorer-col-name {
+  flex: 1;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding-left: 52px;
+}
+
+.explorer-col-btn {
+  width: 82px;
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text2);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 5px;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  transition: color 0.12s, background 0.12s;
+}
+.explorer-col-btn:hover {
+  background: var(--bg3);
+  color: var(--accent);
+}
+.explorer-col-btn.active {
+  color: var(--accent);
+}
+
+.explorer-col-actions {
+  width: 40px;
+  flex-shrink: 0;
 }
 
 .tree-search-highlight {
@@ -806,6 +890,15 @@ body { overflow: hidden; }
   padding: 10px 8px 20px;
 }
 
+.tree-entry-row {
+  position: relative;
+  z-index: 0;
+}
+
+.tree-entry-row.menu-open {
+  z-index: 120;
+}
+
 .tree-item {
   position: relative;
   display: flex;
@@ -881,6 +974,16 @@ body { overflow: hidden; }
   flex-shrink: 0;
 }
 
+.tree-item-date-col {
+  font-size: 11px;
+  color: var(--text3);
+  width: 82px;
+  min-width: 82px;
+  text-align: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .tree-item-meta {
   font-size: 11px;
   color: var(--text2);
@@ -890,6 +993,8 @@ body { overflow: hidden; }
   border-radius: 999px;
   white-space: nowrap;
   flex-shrink: 0;
+  width: 82px;
+  text-align: center;
 }
 
 .tree-item-checked {
@@ -940,7 +1045,7 @@ body { overflow: hidden; }
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 50;
+  z-index: 140;
   min-width: 190px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -949,6 +1054,13 @@ body { overflow: hidden; }
   padding: 5px;
   animation: scaleIn 0.12s ease;
   transform-origin: top right;
+}
+
+.tree-item-dropdown-floating {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2100;
 }
 
 .tree-dropdown-item {
@@ -977,19 +1089,19 @@ body { overflow: hidden; }
 .tree-children { padding-left: 18px; }
 
 /* Stagger children in on load */
-.tree-children > div {
+.tree-children > .tree-entry-row {
   opacity: 0;
   animation: fadeSlideUp 0.16s ease forwards;
 }
-.tree-children > div:nth-child(1)  { animation-delay:  0ms; }
-.tree-children > div:nth-child(2)  { animation-delay: 30ms; }
-.tree-children > div:nth-child(3)  { animation-delay: 55ms; }
-.tree-children > div:nth-child(4)  { animation-delay: 75ms; }
-.tree-children > div:nth-child(5)  { animation-delay: 90ms; }
-.tree-children > div:nth-child(6)  { animation-delay:105ms; }
-.tree-children > div:nth-child(7)  { animation-delay:118ms; }
-.tree-children > div:nth-child(8)  { animation-delay:130ms; }
-.tree-children > div:nth-child(n+9){ animation-delay:140ms; }
+.tree-children > .tree-entry-row:nth-child(1)  { animation-delay:  0ms; }
+.tree-children > .tree-entry-row:nth-child(2)  { animation-delay: 30ms; }
+.tree-children > .tree-entry-row:nth-child(3)  { animation-delay: 60ms; }
+.tree-children > .tree-entry-row:nth-child(4)  { animation-delay: 90ms; }
+.tree-children > .tree-entry-row:nth-child(5)  { animation-delay: 120ms; }
+.tree-children > .tree-entry-row:nth-child(6)  { animation-delay: 150ms; }
+.tree-children > .tree-entry-row:nth-child(7)  { animation-delay: 180ms; }
+.tree-children > .tree-entry-row:nth-child(8)  { animation-delay: 210ms; }
+.tree-children > .tree-entry-row:nth-child(n+9){ animation-delay:140ms; }
 
 .tree-item .expand-icon {
   width: 22px;

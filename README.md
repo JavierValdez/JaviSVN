@@ -1,6 +1,6 @@
 # JaviSVN
 
-Cliente de escritorio SVN para macOS inspirado en GitHub Desktop.
+Cliente de escritorio SVN para macOS y Windows inspirado en GitHub Desktop.
 
 Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, hacer commits y revisar el historial — todo sin necesidad de usar la línea de comandos.
 
@@ -23,6 +23,7 @@ Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, ha
 ## Requisitos
 
 - macOS (Apple Silicon o Intel)
+- Windows 10/11
 
 > SVN viene incluido dentro de la app. No necesitas instalarlo por separado.
 
@@ -30,16 +31,24 @@ Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, ha
 
 ## Instalación
 
+### macOS
+
 1. Descarga el instalador `.dmg` desde la [última release](https://github.com/JavierValdez/JaviSVN/releases/latest)
 2. Abre el `.dmg` y lee el archivo `LEER_ANTES_DE_ABRIR.txt` que aparece en la ventana
 3. Arrastra **JaviSVN** a la carpeta **Aplicaciones**
 4. Si macOS muestra *"JaviSVN está dañado y no puede abrirse"*, ejecuta en Terminal:
-   ```bash
-   xattr -cr /Applications/JaviSVN.app
-   ```
+    ```bash
+    xattr -cr /Applications/JaviSVN.app
+    ```
 5. Abre JaviSVN normalmente desde Launchpad o Finder
 
 > Este mensaje aparece porque la app no está firmada con una cuenta de desarrollador de Apple. El comando `xattr -cr` elimina la cuarentena de macOS. Solo necesitas hacerlo una vez tras cada instalación.
+
+### Windows
+
+1. Descarga el instalador `.exe` desde la [última release](https://github.com/JavierValdez/JaviSVN/releases/latest)
+2. Ejecuta el instalador NSIS y sigue el asistente
+3. Abre JaviSVN desde el acceso directo de escritorio o desde Inicio
 
 ---
 
@@ -72,7 +81,11 @@ Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, ha
 
 - Node.js 20+
 - npm
-- SVN instalado en el sistema (`brew install subversion`) — solo necesario para desarrollo y pruebas; el build final empaqueta sus propios binarios
+- SVN instalado en el sistema:
+    - macOS: `brew install subversion`
+    - Windows: TortoiseSVN con command line tools
+
+> El build final empaqueta sus propios binarios SVN para cada plataforma.
 
 ### Iniciar en modo desarrollo
 
@@ -85,12 +98,27 @@ npm install
 
 > Usar `./start.sh` en lugar de `npm run dev` directamente para evitar conflictos con la variable de entorno `ELECTRON_RUN_AS_NODE`.
 
+> En Windows, usar `npm run dev` (el script ya limpia `ELECTRON_RUN_AS_NODE` con `cross-env`).
+
 ### Compilar el instalador
 
 ```bash
 npm run dist
-# Genera: dist/JaviSVN-X.Y.Z-arm64.dmg
+# macOS: dist/JaviSVN-X.Y.Z-arm64.dmg
+# Windows: dist/JaviSVN Setup X.Y.Z.exe
 ```
+
+### Checklist de release Windows (NSIS)
+
+1. Verifica versión en `package.json` y `package-lock.json`
+2. Ejecuta `npm run build` (incluye bundle de `svn.exe` + DLLs)
+3. Ejecuta `npm run dist`
+4. Comprueba artefacto `dist/JaviSVN Setup X.Y.Z.exe`
+5. Prueba instalación en Windows limpio:
+    - la app abre
+    - detecta SVN bundleado (`svn:version` devuelve versión)
+    - checkout, status y commit funcionan
+6. Publica release en GitHub adjuntando el `.exe` (y `.dmg` si aplica)
 
 ### Verificar TypeScript
 
@@ -122,9 +150,12 @@ src/
 
 ## Notas
 
-- Solo para macOS — los usuarios de Windows pueden usar [TortoiseSVN](https://tortoisesvn.net/)
-- Las credenciales se guardan localmente en `~/Library/Application Support/javisvn/javisvn-config.json`
-- Los repositorios clonados se guardan en `~/Documents/JaviSvn/`
+- Las credenciales se guardan localmente en:
+    - macOS: `~/Library/Application Support/javisvn/javisvn-config.json`
+    - Windows: `%APPDATA%/javisvn/javisvn-config.json`
+- Los repositorios clonados se guardan en:
+    - macOS: `~/Documents/JaviSvn/`
+    - Windows: `%USERPROFILE%/Documents/JaviSvn/`
 
 ---
 

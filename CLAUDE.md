@@ -6,10 +6,10 @@ Guía de referencia para el agente Claude Code al trabajar en este proyecto.
 
 ## Descripción del proyecto
 
-**JaviSVN** es un cliente de escritorio SVN para macOS inspirado en GitHub Desktop. Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, hacer commits y revisar el historial, todo sin necesidad de línea de comandos.
+**JaviSVN** es un cliente de escritorio SVN para macOS y Windows inspirado en GitHub Desktop. Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, hacer commits y revisar el historial, todo sin necesidad de línea de comandos.
 
 - **Stack**: Electron 32 + electron-vite 5 + React 18 + TypeScript (ESM)
-- **Backend SVN**: CLI de Subversion (`/opt/homebrew/bin/svn`) invocado via `child_process.spawn`
+- **Backend SVN**: CLI de Subversion (bundleado o del sistema) invocado via `child_process.spawn`
 - **Comunicación**: IPC Electron (`ipcMain.handle` / `ipcRenderer.invoke` vía `contextBridge`)
 - **Servidor SVN objetivo**: configurado por el usuario al iniciar la app (red interna, no hardcodeado en el código)
 - **Repos locales**: `~/Documents/JaviSvn/`
@@ -26,17 +26,16 @@ Guía de referencia para el agente Claude Code al trabajar en este proyecto.
 npm run dev         # Alternativa directa (requiere que ELECTRON_RUN_AS_NODE no esté seteado)
 
 # Build para distribución
-npm run build       # Compila con electron-vite
-npm run dist        # Build + empaqueta como .dmg (requiere resources/icon.icns)
+npm run build       # Bundle SVN por plataforma + compila con electron-vite
+npm run dist        # Build + empaqueta instaladores (.dmg macOS / .exe NSIS Windows)
 
 # Verificar TypeScript sin compilar
 npx tsc --noEmit
 ```
 
 > **CRITICO**: `ELECTRON_RUN_AS_NODE` **NUNCA debe estar seteado** al lanzar la app.
-> Claude Code lo setea internamente; `start.sh` y los scripts `npm run dev/start` lo
-> desactivan con `env -u ELECTRON_RUN_AS_NODE`. Si la app no abre o falla al importar
-> módulos de Electron, este es el primer lugar a revisar.
+> Los scripts `npm run dev/start` lo limpian con `cross-env ELECTRON_RUN_AS_NODE=`.
+> Si la app no abre o falla al importar módulos de Electron, este es el primer lugar a revisar.
 
 ---
 
@@ -100,11 +99,15 @@ const xml2js = _require('xml2js')
 Electron no hereda el PATH completo del shell. La función `findSvnBin()` busca
 en candidatos hardcodeados:
 ```
+/Program Files/TortoiseSVN/bin/svn.exe (Windows)
+/Program Files (x86)/TortoiseSVN/bin/svn.exe (Windows)
 /opt/homebrew/bin/svn  ← Apple Silicon Mac con Homebrew
 /usr/local/bin/svn     ← Intel Mac con Homebrew
 /usr/bin/svn           ← SVN del sistema
 ```
-Además, todos los `spawn` inyectan `/opt/homebrew/bin` en el PATH del proceso hijo.
+Además, todos los `spawn` inyectan rutas extra en el PATH del proceso hijo según la plataforma:
+- macOS: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`
+- Windows: rutas de TortoiseSVN en `Program Files` / `Program Files (x86)`
 
 ### 6. skipAuth en svn:version
 `svn --version --quiet` **no acepta** los flags `--non-interactive --trust-server-cert-failures=...`.
@@ -169,13 +172,16 @@ git add src/ package.json package-lock.json resources/LEER_ANTES_DE_ABRIR.txt
 git commit -m "vX.Y.Z — Descripción breve de cambios"
 git push origin main
 
-# 3. Compilar el instalador .dmg
+# 3. Compilar instaladores
 npm run dist
-# Genera: dist/JaviSVN-X.Y.Z-arm64.dmg (~99 MB)
+# Genera:
+# - macOS:   dist/JaviSVN-X.Y.Z-arm64.dmg
+# - Windows: dist/JaviSVN Setup X.Y.Z.exe
 
-# 4. Crear release en GitHub con el .dmg adjunto
+# 4. Crear release en GitHub con artefactos adjuntos
 gh release create vX.Y.Z \
   "dist/JaviSVN-X.Y.Z-arm64.dmg" \
+  "dist/JaviSVN Setup X.Y.Z.exe" \
   --title "JaviSVN vX.Y.Z" \
   --notes "$(cat <<'EOF'
 ## Novedades
@@ -191,6 +197,17 @@ EOF
 )"
 ```
 
+### Checklist específico de release Windows
+
+1. Tener `resources/icon.ico` presente
+2. Ejecutar `npm run build` en Windows (bundlea `svn.exe` + DLLs desde TortoiseSVN/PATH)
+3. Ejecutar `npm run dist` y validar `dist/JaviSVN Setup X.Y.Z.exe`
+4. Probar instalación en Windows limpio:
+  - abre la app
+  - muestra versión SVN válida en diagnóstico
+  - checkout/status/commit operativos
+5. Adjuntar `.exe` a la release de GitHub
+
 ### Contenido del DMG (configurado en package.json → `build.dmg`)
 
 El instalador `.dmg` incluye tres elementos en su ventana:
@@ -199,6 +216,12 @@ El instalador `.dmg` incluye tres elementos en su ventana:
 - **LEER_ANTES_DE_ABRIR.txt** (x:130, y:360) — instrucciones de instalación visibles antes de instalar
 
 El `.txt` también se copia dentro del bundle en `extraResources` para que esté disponible en `Resources/LEER_ANTES_DE_ABRIR.txt` una vez instalada la app.
+
+### Configuración Windows (configurada en package.json → `build.win` y `build.nsis`)
+
+- Target: `nsis`
+- Icono app/installer/uninstaller: `resources/icon.ico`
+- Instalación one-click con atajos en escritorio e inicio
 
 ### Archivos a NO incluir en git (ya en .gitignore)
 - `resources/bin/` — binarios SVN empaquetados (svn, libsvn, etc.)
@@ -217,7 +240,7 @@ El `.txt` también se copia dentro del bundle en `extraResources` para que esté
 
 - No hay branches SVN. El servidor solo usa trunk/main.
 - Las credenciales se guardan en texto plano en el config JSON (uso interno/local).
-- El usuario conecta desde Windows con TortoiseSVN; esta app es solo para macOS.
+- El usuario conecta también desde Windows; la app soporta empaquetado NSIS con SVN bundleado.
 - No se necesita git para nada — es una app 100% SVN.
 - Al hacer commit, los archivos `?` (unversioned) seleccionados se agregan
   automáticamente con `svn add --force` antes del commit.

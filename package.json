@@ -1,13 +1,13 @@
 {
   "name": "javisvn",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "SVN Desktop Client - Cliente SVN estilo GitHub Desktop",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "env -u ELECTRON_RUN_AS_NODE electron-vite dev",
-    "build": "bash scripts/bundle-svn.sh && electron-vite build",
-    "start": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
+    "dev": "node scripts/run-electron-vite.mjs dev",
+    "build": "node scripts/bundle-svn.mjs && electron-vite build",
+    "start": "node scripts/run-electron-vite.mjs preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"
   },
@@ -23,6 +23,7 @@
     "@types/react-dom": "^18.3.0",
     "@types/xml2js": "^0.4.14",
     "@vitejs/plugin-react": "^4.3.0",
+    "cross-env": "^7.0.3",
     "electron": "^32.0.0",
     "electron-builder": "^24.13.0",
     "electron-vite": "^5.0.0",
@@ -37,6 +38,20 @@
     "mac": {
       "target": "dmg",
       "icon": "resources/icon.icns"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": false,
+      "installerIcon": "resources/icon.ico",
+      "uninstallerIcon": "resources/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
     },
     "dmg": {
       "contents": [
@@ -81,6 +96,12 @@
     ],
     "directories": {
       "output": "dist"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "JavierValdez",
+      "repo": "JaviSVN",
+      "releaseType": "release"
     }
   }
 }

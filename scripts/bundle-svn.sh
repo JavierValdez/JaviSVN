@@ -8,6 +8,11 @@
 
 set -e
 
+if [[ "$OSTYPE" != "darwin"* ]]; then
+  echo "Este script es solo para macOS. En Windows usa scripts/bundle-svn.ps1"
+  exit 0
+fi
+
 # ─── Locate SVN ──────────────────────────────────────────────────────────────
 SVN_SRC=""
 for candidate in /opt/homebrew/bin/svn /usr/local/bin/svn; do

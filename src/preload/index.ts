@@ -47,6 +47,7 @@ const svnAPI = {
   update: (repoPath: string) => ipcRenderer.invoke('svn:update', repoPath),
   status: (repoPath: string) => ipcRenderer.invoke('svn:status', repoPath),
   diff: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:diff', repoPath, filePath),
+  fileContent: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:fileContent', repoPath, filePath),
   revisionFileDiff: (repoPath: string, revision: number, svnPath: string) =>
     ipcRenderer.invoke('svn:revisionFileDiff', repoPath, revision, svnPath),
   commit: (repoPath: string, files: string[], message: string) =>
@@ -114,6 +115,27 @@ const svnAPI = {
     ipcRenderer.on('appUpdate:state', handler)
     return () => ipcRenderer.removeListener('appUpdate:state', handler)
   }
+}
+
+const appUpdateAPI = {
+  getState: () => ipcRenderer.invoke('appUpdate:getState'),
+  check: () => ipcRenderer.invoke('appUpdate:check'),
+  download: () => ipcRenderer.invoke('appUpdate:download'),
+  onState: (cb: (state: any) => void) => {
+    const handler = (_: any, state: any) => cb(state)
+    ipcRenderer.on('appUpdate:state', handler)
+    return () => ipcRenderer.removeListener('appUpdate:state', handler)
+  }
+}
+
+if (process.contextIsolated) {
+  try {
+    contextBridge.exposeInMainWorld('appUpdate', appUpdateAPI)
+  } catch (error) {
+    console.error(error)
+  }
+} else {
+  ;(globalThis as any).appUpdate = appUpdateAPI
 }
 
 if (process.contextIsolated) {

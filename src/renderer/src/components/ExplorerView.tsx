@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Credentials, LogEntry, RemoteEntry, RemoteSearchResult, RemoteServer } from '../types/svn'
 import DiffViewer from './DiffViewer'
 
@@ -78,6 +79,14 @@ interface RemoteFileDiffState {
   diff: string | null
   loading: boolean
 }
+
+interface EntryMenuState {
+  entry: RemoteEntry
+  top: number
+  left: number
+}
+
+type EntrySortMode = 'revision' | 'date'
 
 const BINARY_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg',
@@ -175,7 +184,41 @@ export default function ExplorerView({
 }: Props) {
   const [serverUrl, setServerUrl] = useState('')
   const [tree, setTree] = useState<RemoteEntry[]>([])
+  const [entrySort, setEntrySort] = useState<EntrySortMode>('revision')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [loading, setLoading] = useState(false)
+  function getEntryDateValue(entry: RemoteEntry): number {
+    const value = Date.parse(entry.date || '')
+    return Number.isFinite(value) ? value : 0
+  }
+
+  function sortEntries(entries: RemoteEntry[], sortMode: EntrySortMode, dir: 'asc' | 'desc'): RemoteEntry[] {
+    const sign = dir === 'asc' ? 1 : -1
+    return [...entries].sort((left, right) => {
+      if (left.kind !== right.kind) {
+        return left.kind === 'dir' ? -1 : 1
+      }
+
+      if (sortMode === 'date') {
+        const dateDiff = (getEntryDateValue(left) - getEntryDateValue(right)) * sign
+        if (dateDiff !== 0) return dateDiff
+      } else {
+        const revisionDiff = (left.revision - right.revision) * sign
+        if (revisionDiff !== 0) return revisionDiff
+      }
+
+      return left.name.localeCompare(right.name, 'es', { numeric: true, sensitivity: 'base' })
+    })
+  }
+
+  const handleSortClick = (mode: EntrySortMode) => {
+    if (mode === entrySort) {
+      setSortDir(prev => prev === 'desc' ? 'asc' : 'desc')
+    } else {
+      setEntrySort(mode)
+      setSortDir('desc')
+    }
+  }
   const [error, setError] = useState<string | null>(null)
   const [searchDialog, setSearchDialog] = useState<RemoteSearchDialogState>({
     open: false,
@@ -206,7 +249,7 @@ export default function ExplorerView({
   })
   const [createRemote, setCreateRemote] = useState<CreateRemoteState | null>(null)
   const [saveRemoteDialog, setSaveRemoteDialog] = useState<{ url: string; name: string } | null>(null)
-  const [openEntryMenuUrl, setOpenEntryMenuUrl] = useState<string | null>(null)
+  const [entryMenu, setEntryMenu] = useState<EntryMenuState | null>(null)
   const treeMenuRef = useRef<HTMLDivElement | null>(null)
   const [fileViewer, setFileViewer] = useState<FileViewerState>({
     open: false, url: '', name: '', content: null, loading: false, error: null
@@ -236,27 +279,33 @@ export default function ExplorerView({
   }, [])
 
   useEffect(() => {
-    if (!openEntryMenuUrl) return
+    if (!entryMenu) return
+
+    const closeMenu = () => setEntryMenu(null)
 
     const handleClickOutside = (event: MouseEvent) => {
       if (treeMenuRef.current && !treeMenuRef.current.contains(event.target as Node)) {
-        setOpenEntryMenuUrl(null)
+        closeMenu()
       }
     }
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setOpenEntryMenuUrl(null)
+        closeMenu()
       }
     }
 
     document.addEventListener('mousedown', handleClickOutside)
     document.addEventListener('keydown', handleEscape)
+    document.addEventListener('scroll', closeMenu, true)
+    window.addEventListener('resize', closeMenu)
     return () => {
       document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleEscape)
+      document.removeEventListener('scroll', closeMenu, true)
+      window.removeEventListener('resize', closeMenu)
     }
-  }, [openEntryMenuUrl])
+  }, [entryMenu])
 
   useEffect(() => {
     if (!activeRemote?.id) return
@@ -288,7 +337,7 @@ export default function ExplorerView({
 
     setError(null)
     setServerUrl(activeRemote.url)
-    setOpenEntryMenuUrl(null)
+    setEntryMenu(null)
     prevRemoteId.current = activeRemote.id
   }, [activeRemote?.id])
 
@@ -327,7 +376,7 @@ export default function ExplorerView({
 
     setLoading(true)
     setError(null)
-    setOpenEntryMenuUrl(null)
+    setEntryMenu(null)
     try {
       const svn = getSvnApi()
       await svn.setServerUrl(nextUrl)
@@ -697,16 +746,150 @@ export default function ExplorerView({
     }
   }
 
+  const openEntryMenuAtButton = (entry: RemoteEntry, button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect()
+    const menuWidth = 220
+    const menuHeight = entry.kind === 'dir' ? 340 : 220
+    const margin = 12
+    const left = Math.max(margin, Math.min(window.innerWidth - menuWidth - margin, rect.right - menuWidth))
+    const top = rect.bottom + 6 + menuHeight > window.innerHeight - margin
+      ? Math.max(margin, rect.top - menuHeight - 6)
+      : rect.bottom + 6
+
+    setEntryMenu({ entry, top, left })
+  }
+
+  const renderEntryMenu = () => {
+    if (!entryMenu) return null
+
+    const { entry, top, left } = entryMenu
+    const isDir = entry.kind === 'dir'
+
+    return createPortal(
+      <div
+        className="tree-item-dropdown tree-item-dropdown-floating"
+        ref={treeMenuRef}
+        style={{ top, left }}
+      >
+        <button
+          className="tree-dropdown-item"
+          onClick={() => {
+            setEntryMenu(null)
+            openRemoteLog(entry)
+          }}
+        >
+          🕘 Ver log
+        </button>
+        <button
+          className="tree-dropdown-item"
+          onClick={() => {
+            setEntryMenu(null)
+            navigator.clipboard.writeText(entry.url)
+            toast('URL copiada', 'success')
+          }}
+        >
+          📋 Copiar URL
+        </button>
+        <button
+          className="tree-dropdown-item"
+          onClick={() => {
+            setEntryMenu(null)
+            navigator.clipboard.writeText(String(entry.revision))
+            toast('Revisión copiada', 'success')
+          }}
+        >
+          📋 Copiar revisión (r{entry.revision})
+        </button>
+        <button
+          className="tree-dropdown-item"
+          onClick={() => {
+            setEntryMenu(null)
+            navigator.clipboard.writeText(`${entry.url}@${entry.revision}`)
+            toast('URL@revisión copiada', 'success')
+          }}
+        >
+          📋 Copiar URL@revisión
+        </button>
+        {!isDir && (
+          <>
+            <div className="tree-dropdown-divider" />
+            <button
+              className="tree-dropdown-item"
+              onClick={() => {
+                setEntryMenu(null)
+                openFileViewer(entry)
+              }}
+            >
+              👁 Ver archivo
+            </button>
+          </>
+        )}
+        {isDir && (
+          <>
+            <div className="tree-dropdown-divider" />
+            <button
+              className="tree-dropdown-item"
+              onClick={() => {
+                setEntryMenu(null)
+                startCheckout(entry)
+              }}
+            >
+              {entry.isCheckedOut ? '🔁 Volver a clonar' : '🧬 Clonar repositorio'}
+            </button>
+            <button
+              className="tree-dropdown-item"
+              onClick={() => {
+                setEntryMenu(null)
+                startExport(entry)
+              }}
+            >
+              📦 Descargar copia
+            </button>
+            <button
+              className="tree-dropdown-item"
+              onClick={() => {
+                setEntryMenu(null)
+                openCreateRemoteDialog('folder', entry)
+              }}
+            >
+              📁 Crear subcarpeta
+            </button>
+            <button
+              className="tree-dropdown-item"
+              onClick={() => {
+                setEntryMenu(null)
+                openCreateRemoteDialog('file', entry)
+              }}
+            >
+              📄 Crear archivo
+            </button>
+            <div className="tree-dropdown-divider" />
+            <button
+              className="tree-dropdown-item"
+              onClick={() => {
+                setEntryMenu(null)
+                openSearch(entry)
+              }}
+            >
+              🔍 Buscar en esta carpeta
+            </button>
+          </>
+        )}
+      </div>,
+      document.body
+    )
+  }
+
   const renderEntry = (entry: RemoteEntry, depth = 0) => {
     const isDir = entry.kind === 'dir'
     const isExpanded = expandedUrls.has(entry.url)
-    const isMenuOpen = openEntryMenuUrl === entry.url
+    const isMenuOpen = entryMenu?.entry.url === entry.url
     const children = childrenCache[entry.url]
     const isLoadingChildren = loadingChildrenUrls.has(entry.url)
     const hasLoadedChildren = Object.prototype.hasOwnProperty.call(childrenCache, entry.url)
 
     return (
-      <div key={entry.url}>
+      <div key={entry.url} className={`tree-entry-row ${isMenuOpen ? 'menu-open' : ''}`}>
         <div
           className={`tree-item ${isExpanded ? 'expanded' : ''} ${isLoadingChildren ? 'loading' : ''} ${isMenuOpen ? 'menu-open' : ''}`}
           style={{ paddingLeft: 16 + depth * 20 }}
@@ -746,29 +929,26 @@ export default function ExplorerView({
             {isDir ? (isExpanded ? '📂' : '📁') : getFileIcon(entry.name)}
           </span>
 
-          {/* Body: name + subtitle */}
+          {/* Body: name + author */}
           <div
             className="tree-item-body"
             onClick={() => isDir ? toggleExpand(entry) : openFileViewer(entry)}
             style={{ cursor: isLoadingChildren ? 'wait' : 'pointer' }}
           >
             <span className="tree-item-name">{entry.name.replace(/\/$/, '')}</span>
-            {(entry.author || entry.date) && (
+            {(entry.author || entry.isCheckedOut) && (
               <div className="tree-item-subtitle">
                 {entry.author && <span className="tree-item-author-text">{entry.author}</span>}
-                {entry.author && entry.date && <span className="tree-item-dot">·</span>}
-                {entry.date && <span className="tree-item-date-text">{formatDateShort(entry.date)}</span>}
+                {entry.isCheckedOut && <span className="tree-item-checked">✓ Local</span>}
               </div>
             )}
           </div>
 
-          {/* Meta */}
-          <span className="tree-item-meta">r{entry.revision}</span>
+          {/* Date column */}
+          <span className="tree-item-date-col">{formatDateShort(entry.date)}</span>
 
-          {/* Checked out badge */}
-          {entry.isCheckedOut && (
-            <span className="tree-item-checked">✓ Local</span>
-          )}
+          {/* Revision column */}
+          <span className="tree-item-meta">r{entry.revision}</span>
 
           <div className="tree-item-actions">
             <button
@@ -776,130 +956,16 @@ export default function ExplorerView({
               title="Opciones"
               onClick={(e) => {
                 e.stopPropagation()
-                setOpenEntryMenuUrl(isMenuOpen ? null : entry.url)
+                if (isMenuOpen) {
+                  setEntryMenu(null)
+                  return
+                }
+
+                openEntryMenuAtButton(entry, e.currentTarget)
               }}
             >
               ···
             </button>
-
-            {isMenuOpen && (
-              <div className="tree-item-dropdown" ref={treeMenuRef}>
-                <button
-                  className="tree-dropdown-item"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setOpenEntryMenuUrl(null)
-                    openRemoteLog(entry)
-                  }}
-                >
-                  🕘 Ver log
-                </button>
-                <button
-                  className="tree-dropdown-item"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setOpenEntryMenuUrl(null)
-                    navigator.clipboard.writeText(entry.url)
-                    toast('URL copiada', 'success')
-                  }}
-                >
-                  📋 Copiar URL
-                </button>
-                <button
-                  className="tree-dropdown-item"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setOpenEntryMenuUrl(null)
-                    navigator.clipboard.writeText(String(entry.revision))
-                    toast('Revisión copiada', 'success')
-                  }}
-                >
-                  📋 Copiar revisión (r{entry.revision})
-                </button>
-                <button
-                  className="tree-dropdown-item"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setOpenEntryMenuUrl(null)
-                    navigator.clipboard.writeText(`${entry.url}@${entry.revision}`)
-                    toast('URL@revisión copiada', 'success')
-                  }}
-                >
-                  📋 Copiar URL@revisión
-                </button>
-                {!isDir && (
-                  <>
-                    <div className="tree-dropdown-divider" />
-                    <button
-                      className="tree-dropdown-item"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setOpenEntryMenuUrl(null)
-                        openFileViewer(entry)
-                      }}
-                    >
-                      👁 Ver archivo
-                    </button>
-                  </>
-                )}
-                {isDir && (
-                  <>
-                    <div className="tree-dropdown-divider" />
-                    <button
-                      className="tree-dropdown-item"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setOpenEntryMenuUrl(null)
-                        startCheckout(entry)
-                      }}
-                    >
-                      {entry.isCheckedOut ? '🔁 Volver a clonar' : '🧬 Clonar repositorio'}
-                    </button>
-                    <button
-                      className="tree-dropdown-item"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setOpenEntryMenuUrl(null)
-                        startExport(entry)
-                      }}
-                    >
-                      📦 Descargar copia
-                    </button>
-                    <button
-                      className="tree-dropdown-item"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setOpenEntryMenuUrl(null)
-                        openCreateRemoteDialog('folder', entry)
-                      }}
-                    >
-                      📁 Crear subcarpeta
-                    </button>
-                    <button
-                      className="tree-dropdown-item"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setOpenEntryMenuUrl(null)
-                        openCreateRemoteDialog('file', entry)
-                      }}
-                    >
-                      📄 Crear archivo
-                    </button>
-                    <div className="tree-dropdown-divider" />
-                    <button
-                      className="tree-dropdown-item"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setOpenEntryMenuUrl(null)
-                        openSearch(entry)
-                      }}
-                    >
-                      🔍 Buscar en esta carpeta
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
           </div>
         </div>
 
@@ -924,7 +990,7 @@ export default function ExplorerView({
                 (directorio vacío)
               </div>
             ) : (
-              children.map((child) => renderEntry(child, depth + 1))
+              sortEntries(children, entrySort, sortDir).map((child) => renderEntry(child, depth + 1))
             )}
           </div>
         )}
@@ -983,6 +1049,26 @@ export default function ExplorerView({
         </button>
       </div>
 
+      {/* Column headers */}
+      {tree.length > 0 && (
+        <div className="explorer-col-header">
+          <div className="explorer-col-name">Nombre</div>
+          <button
+            className={`explorer-col-btn${entrySort === 'date' ? ' active' : ''}`}
+            onClick={() => handleSortClick('date')}
+          >
+            Fecha {entrySort === 'date' ? (sortDir === 'desc' ? '▼' : '▲') : '⇅'}
+          </button>
+          <button
+            className={`explorer-col-btn${entrySort === 'revision' ? ' active' : ''}`}
+            onClick={() => handleSortClick('revision')}
+          >
+            Revisión {entrySort === 'revision' ? (sortDir === 'desc' ? '▼' : '▲') : '⇅'}
+          </button>
+          <div className="explorer-col-actions" />
+        </div>
+      )}
+
       {/* Tree */}
       <div className="explorer-tree">
         {loading && tree.length === 0 ? (
@@ -1023,9 +1109,11 @@ export default function ExplorerView({
             </button>
           </div>
         ) : (
-          tree.map((entry) => renderEntry(entry, 0))
+          sortEntries(tree, entrySort, sortDir).map((entry) => renderEntry(entry, 0))
         )}
       </div>
+
+      {renderEntryMenu()}
 
       {/* Save remote dialog */}
       {saveRemoteDialog && (

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { get } from 'https'
+import { get } from 'node:https'
 
 type UpdateStage =
   | 'idle'

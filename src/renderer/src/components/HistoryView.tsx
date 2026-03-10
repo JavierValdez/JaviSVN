@@ -300,6 +300,27 @@ export default function HistoryView({ repo, toast }: Props) {
                             📋
                           </button>
                         )}
+                        {canDiff && repoInfo && (() => {
+                          const fileUrl = `${repoInfo.rootUrl}${p.path}@${selected.revision}`
+                          const fileName = p.path.split('/').filter(Boolean).pop() || p.path
+                          return (
+                            <button
+                              className="btn btn-ghost"
+                              style={{ padding: '0 5px', fontSize: 10, opacity: 0.6, flexShrink: 0 }}
+                              title={`Descargar archivo\n${fileUrl}`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                window.svn.downloadFile(fileUrl, fileName)
+                                  .then((res: any) => {
+                                    if (!res?.canceled) toast('Archivo descargado', 'success')
+                                  })
+                                  .catch((err: any) => toast(String(err?.message || err), 'error'))
+                              }}
+                            >
+                              ⬇
+                            </button>
+                          )
+                        })()}
                         {canDiff && <span className="history-path-diff-hint">Ver diff →</span>}
                       </div>
                     )

@@ -1174,6 +1174,24 @@ ipcMain.handle('svn:export', async (_e, url: string, targetPath: string) => {
   }
 })
 
+// ─── IPC: Download single remote file ────────────────────────────────────────
+ipcMain.handle('svn:downloadFile', async (_e, url: string, defaultName: string) => {
+  const result = await dialog.showSaveDialog({
+    title: 'Guardar archivo',
+    defaultPath: defaultName,
+    buttonLabel: 'Guardar'
+  })
+  if (result.canceled || !result.filePath) return { canceled: true }
+  const targetPath = result.filePath
+  try {
+    await runSvn(['export', '--force', url, targetPath], { timeoutMs: 5 * 60 * 1000 })
+    return { success: true, path: targetPath }
+  } catch (err: any) {
+    const msg = String(err?.message || '').trim()
+    throw new Error(msg || 'Error al descargar el archivo')
+  }
+})
+
 // ─── IPC: Pick export folder ──────────────────────────────────────────────────
 ipcMain.handle('dialog:pickExportFolder', async () => {
   const result = await dialog.showOpenDialog({

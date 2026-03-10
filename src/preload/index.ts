@@ -34,6 +34,7 @@ const svnAPI = {
     ipcRenderer.invoke('svn:remoteCreateFile', parentUrl, name, content, message),
   svnExport: (url: string, targetPath: string) => ipcRenderer.invoke('svn:export', url, targetPath),
   pickExportFolder: () => ipcRenderer.invoke('dialog:pickExportFolder'),
+  downloadFile: (url: string, defaultName: string) => ipcRenderer.invoke('svn:downloadFile', url, defaultName),
   ping: (url: string) => ipcRenderer.invoke('svn:ping', url),
   pingWithCreds: (creds: { url: string; username: string; password: string }) =>
     ipcRenderer.invoke('svn:pingWithCreds', creds),

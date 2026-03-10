@@ -1276,6 +1276,28 @@ export default function ExplorerView({
                               >
                                 📋
                               </button>
+                              {canDiff && remoteLog.repoRoot && (() => {
+                                const fileUrl = `${remoteLog.repoRoot}${p.path}@${remoteLog.selected!.revision}`
+                                const fileName = p.path.split('/').filter(Boolean).pop() || p.path
+                                return (
+                                  <button
+                                    className="btn btn-ghost"
+                                    style={{ padding: '0 5px', fontSize: 10, opacity: 0.6, flexShrink: 0 }}
+                                    title={`Descargar archivo\n${fileUrl}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      const svn = getSvnApi()
+                                      svn.downloadFile(fileUrl, fileName)
+                                        .then((res: any) => {
+                                          if (!res?.canceled) toast('Archivo descargado', 'success')
+                                        })
+                                        .catch((err: any) => toast(normalizeError(err), 'error'))
+                                    }}
+                                  >
+                                    ⬇
+                                  </button>
+                                )
+                              })()}
                               {canDiff && <span className="history-path-diff-hint">Ver diff →</span>}
                             </div>
                           )

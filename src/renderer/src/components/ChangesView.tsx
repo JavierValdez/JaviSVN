@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import { FileChange, LocalRepo } from '../types/svn'
 import DiffViewer from './DiffViewer'
+import BlameView from './BlameView'
+import ConflictResolver from './ConflictResolver'
 
 interface Props {
   repo: LocalRepo
   changes: FileChange[]
   loading: boolean
-  onRefresh: () => void
+  onRefresh: () => void | Promise<void>
   toast: (msg: string, type?: 'success' | 'error' | 'info') => void
 }
 
@@ -48,6 +50,13 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   const [commitMsg, setCommitMsg] = useState('')
   const [committing, setCommitting] = useState(false)
   const [reverting, setReverting] = useState(false)
+  const [blameFile, setBlameFile] = useState<string | null>(null)
+  const [conflictFile, setConflictFile] = useState<string | null>(null)
+
+  const changesSignature = changes
+    .map((c) => `${c.status}:${c.path}`)
+    .sort()
+    .join('\n')
 
   const selectedChange = selectedFile
     ? changes.find((c) => c.path === selectedFile) || null
@@ -62,7 +71,9 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     setChecked(initial)
     setSelectedFile(null)
     setDiff('')
-  }, [repo.path, changes.length])
+    setBlameFile(null)
+    setConflictFile(null)
+  }, [repo.path, changesSignature])
 
   const loadDiff = async (filePath: string) => {
     setSelectedFile(filePath)
@@ -117,7 +128,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
       toast('Commit realizado correctamente', 'success')
       setCommitMsg('')
       setChecked(new Set())
-      onRefresh()
+      await onRefresh()
     } catch (err: any) {
       toast(err.message || 'Error al hacer commit', 'error')
     } finally {
@@ -137,7 +148,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
         setSelectedFile(null)
         setDiff('')
       }
-      onRefresh()
+      await onRefresh()
     } catch (err: any) {
       toast(err.message || 'Error al revertir', 'error')
     } finally {
@@ -150,8 +161,11 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     return (order[a.status] ?? 9) - (order[b.status] ?? 9)
   })
 
+  const canShowBlame = selectedChange ? !['?', 'A', 'D', '!', 'C'].includes(selectedChange.status) : false
+
   return (
-    <div className="changes-layout">
+    <>
+      <div className="changes-layout">
       {/* Left: file list */}
       <div className="changes-list-panel">
         <div className="changes-list-header">
@@ -244,9 +258,31 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
       {/* Right: diff viewer */}
       <div className="diff-panel">
         {selectedChange && (
-          <div className={`diff-status-chip ${STATUS_CLASS[selectedChange.status] || ''}`}>
-            <span>{STATUS_ICON[selectedChange.status] || '📄'}</span>
-            <span>{STATUS_LABEL[selectedChange.status] || selectedChange.status}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '10px 12px 0' }}>
+            <div className={`diff-status-chip ${STATUS_CLASS[selectedChange.status] || ''}`} style={{ margin: 0 }}>
+              <span>{STATUS_ICON[selectedChange.status] || '📄'}</span>
+              <span>{STATUS_LABEL[selectedChange.status] || selectedChange.status}</span>
+            </div>
+            {canShowBlame && (
+              <button
+                className="btn btn-ghost"
+                style={{ padding: '4px 10px', fontSize: 11 }}
+                onClick={() => setBlameFile(selectedChange.path)}
+                title="Ver quién modificó cada línea"
+              >
+                📖 Blame
+              </button>
+            )}
+            {selectedChange.status === 'C' && (
+              <button
+                className="btn btn-default"
+                style={{ padding: '4px 10px', fontSize: 11, color: 'var(--danger)', borderColor: 'rgba(207,34,46,0.3)' }}
+                onClick={() => setConflictFile(selectedChange.path)}
+                title="Resolver conflicto SVN"
+              >
+                ⚠ Resolver conflicto
+              </button>
+            )}
           </div>
         )}
         {diffLoading ? (
@@ -262,6 +298,30 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
           </div>
         )}
       </div>
-    </div>
+      </div>
+      {blameFile && (
+        <BlameView
+          repo={repo}
+          filePath={blameFile}
+          onClose={() => setBlameFile(null)}
+          toast={toast}
+        />
+      )}
+      {conflictFile && (
+        <ConflictResolver
+          repo={repo}
+          filePath={conflictFile}
+          onClose={() => setConflictFile(null)}
+          onResolved={async () => {
+            setConflictFile(null)
+            await onRefresh()
+            if (selectedFile === conflictFile) {
+              await loadDiff(conflictFile)
+            }
+          }}
+          toast={toast}
+        />
+      )}
+    </>
   )
 }

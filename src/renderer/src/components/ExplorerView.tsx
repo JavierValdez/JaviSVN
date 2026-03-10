@@ -173,6 +173,27 @@ function suggestRemoteName(url: string): string {
   }
 }
 
+function normalizeRepoRelativePath(path: string): string {
+  const trimmed = (path || '').trim()
+  if (!trimmed || trimmed === '/') return '/'
+  return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`
+}
+
+function getRemoteLogScopePath(repoRoot: string | null, targetUrl: string): string | null {
+  const root = (repoRoot || '').trim().replace(/\/+$/, '')
+  const target = (targetUrl || '').trim().replace(/\/+$/, '')
+  if (!root || !target || !target.startsWith(root)) return null
+
+  const relative = target.slice(root.length)
+  return normalizeRepoRelativePath(relative)
+}
+
+function isPathWithinRemoteLogScope(changedPath: string, scopePath: string | null): boolean {
+  if (!scopePath || scopePath === '/') return true
+  const normalizedChangedPath = normalizeRepoRelativePath(changedPath)
+  return normalizedChangedPath === scopePath || normalizedChangedPath.startsWith(`${scopePath}/`)
+}
+
 export default function ExplorerView({
   credentials,
   activeRemote,
@@ -236,6 +257,7 @@ export default function ExplorerView({
   const [expandedUrls, setExpandedUrls] = useState<Set<string>>(new Set())
   const [childrenCache, setChildrenCache] = useState<Record<string, RemoteEntry[]>>({})
   const [loadingChildrenUrls, setLoadingChildrenUrls] = useState<Set<string>>(new Set())
+  const [highlightedEntryUrl, setHighlightedEntryUrl] = useState<string | null>(null)
   const [checkout, setCheckout] = useState<CheckoutState | null>(null)
   const [svnExportDialog, setSvnExportDialog] = useState<ExportState | null>(null)
   const [remoteLog, setRemoteLog] = useState<RemoteLogState>({
@@ -251,10 +273,18 @@ export default function ExplorerView({
   const [saveRemoteDialog, setSaveRemoteDialog] = useState<{ url: string; name: string } | null>(null)
   const [entryMenu, setEntryMenu] = useState<EntryMenuState | null>(null)
   const treeMenuRef = useRef<HTMLDivElement | null>(null)
+  const treeEntryRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const childrenCacheRef = useRef<Record<string, RemoteEntry[]>>(childrenCache)
+  const expandedUrlsRef = useRef<Set<string>>(expandedUrls)
+  const highlightTimeoutRef = useRef<number | null>(null)
   const [fileViewer, setFileViewer] = useState<FileViewerState>({
     open: false, url: '', name: '', content: null, loading: false, error: null
   })
   const [remoteFileDiff, setRemoteFileDiff] = useState<RemoteFileDiffState | null>(null)
+  const remoteLogScopePath = getRemoteLogScopePath(remoteLog.repoRoot, remoteLog.url)
+  const selectedRemoteLogHasOutOfScopePaths = Boolean(
+    remoteLog.selected?.paths.some((p) => !isPathWithinRemoteLogScope(p.path, remoteLogScopePath))
+  )
 
   // Per-server navigation state cache
   interface ServerNavState {
@@ -264,6 +294,22 @@ export default function ExplorerView({
   }
   const serverStateCache = useRef<Record<string, ServerNavState>>({})
   const prevRemoteId = useRef<string | null>(null)
+
+  useEffect(() => {
+    childrenCacheRef.current = childrenCache
+  }, [childrenCache])
+
+  useEffect(() => {
+    expandedUrlsRef.current = expandedUrls
+  }, [expandedUrls])
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimeoutRef.current !== null) {
+        window.clearTimeout(highlightTimeoutRef.current)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     const init = async () => {
@@ -488,8 +534,13 @@ export default function ExplorerView({
 
   const doCheckout = async () => {
     if (!checkout) return
-    if (!checkout.name.trim()) {
+    const checkoutName = checkout.name.trim()
+    if (!checkoutName) {
       toast('Escribe un nombre para el directorio local', 'error')
+      return
+    }
+    if (checkoutName === '.' || checkoutName === '..' || /[<>:"/\\|?*\u0000-\u001f]/.test(checkoutName)) {
+      toast('El nombre del directorio local contiene caracteres no permitidos', 'error')
       return
     }
 
@@ -502,7 +553,7 @@ export default function ExplorerView({
       unsub = svn.onCheckoutProgress((msg: string) => {
         setCheckout((prev) => prev ? { ...prev, log: prev.log + msg } : null)
       })
-      await svn.checkout(checkout.url, checkout.name.trim())
+      await svn.checkout(checkout.url, checkoutName)
       setCheckout((prev) => prev ? { ...prev, running: false, done: true } : null)
       toast('Repositorio clonado correctamente', 'success')
       onCheckoutDone()
@@ -716,6 +767,148 @@ export default function ExplorerView({
     })
   }
 
+  const waitForNextPaint = () => new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve())
+  })
+
+  const focusTreeEntry = async (entryUrl: string) => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await waitForNextPaint()
+      const node = treeEntryRefs.current[entryUrl]
+      if (!node) continue
+
+      node.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+      setHighlightedEntryUrl(entryUrl)
+      if (highlightTimeoutRef.current !== null) {
+        window.clearTimeout(highlightTimeoutRef.current)
+      }
+      highlightTimeoutRef.current = window.setTimeout(() => {
+        setHighlightedEntryUrl((prev) => (prev === entryUrl ? null : prev))
+      }, 2600)
+      return true
+    }
+    return false
+  }
+
+  const ensureChildrenLoaded = async (parentUrl: string) => {
+    const wasExpanded = expandedUrlsRef.current.has(parentUrl)
+
+    setExpandedUrls((prev) => {
+      const next = new Set(prev)
+      next.add(parentUrl)
+      return next
+    })
+
+    if (Object.prototype.hasOwnProperty.call(childrenCacheRef.current, parentUrl)) {
+      await waitForNextPaint()
+      return
+    }
+
+    setLoadingChildrenUrls((prev) => {
+      const next = new Set(prev)
+      next.add(parentUrl)
+      return next
+    })
+
+    try {
+      const svn = getSvnApi()
+      const children = await svn.listRemote(parentUrl)
+      childrenCacheRef.current = { ...childrenCacheRef.current, [parentUrl]: children }
+      setChildrenCache((prev) => ({ ...prev, [parentUrl]: children }))
+      await waitForNextPaint()
+    } catch (err) {
+      if (!wasExpanded) {
+        setExpandedUrls((prev) => {
+          const next = new Set(prev)
+          next.delete(parentUrl)
+          return next
+        })
+      }
+      throw err
+    } finally {
+      setLoadingChildrenUrls((prev) => {
+        const next = new Set(prev)
+        next.delete(parentUrl)
+        return next
+      })
+    }
+  }
+
+  const getSearchExpansionTrail = (baseUrl: string, entryUrl: string) => {
+    const normalizedBaseUrl = baseUrl.replace(/\/+$/, '')
+    const normalizedEntryUrl = entryUrl.replace(/\/+$/, '')
+    const prefix = `${normalizedBaseUrl}/`
+
+    if (!normalizedEntryUrl.startsWith(prefix)) {
+      return null
+    }
+
+    const relativeParts = normalizedEntryUrl.slice(prefix.length).split('/').filter(Boolean)
+    if (relativeParts.length === 0) {
+      return [normalizedBaseUrl]
+    }
+
+    const foldersToExpand = [normalizedBaseUrl]
+    let currentUrl = normalizedBaseUrl
+    for (const part of relativeParts.slice(0, -1)) {
+      currentUrl = `${currentUrl}/${part}`
+      foldersToExpand.push(currentUrl)
+    }
+    return foldersToExpand
+  }
+
+  const handleSearchResultSelect = async (result: RemoteSearchResult) => {
+    const searchBaseUrl = searchDialog.url
+    const searchFolderName = searchDialog.folderName
+
+    closeSearch()
+
+    if (result.kind === 'revision') {
+      const pseudoEntry: RemoteEntry = {
+        name: searchFolderName || searchBaseUrl.split('/').pop() || searchBaseUrl,
+        url: searchBaseUrl,
+        kind: 'dir',
+        revision: result.revision || 0,
+        author: '',
+        date: '',
+        isCheckedOut: false
+      }
+
+      await openRemoteLog(pseudoEntry)
+      if (result.revision) {
+        setRemoteLog((prev) => ({
+          ...prev,
+          selected: prev.entries.find((entry) => entry.revision === result.revision) || prev.selected
+        }))
+      }
+      return
+    }
+
+    try {
+      const foldersToExpand = getSearchExpansionTrail(searchBaseUrl, result.entryUrl)
+      if (!foldersToExpand) {
+        toast('El resultado no pertenece a la rama cargada en el árbol', 'error')
+        return
+      }
+
+      for (const folderUrl of foldersToExpand) {
+        await ensureChildrenLoaded(folderUrl)
+      }
+
+      const focusContextUrl = result.kind === 'dir'
+        ? result.entryUrl
+        : foldersToExpand[foldersToExpand.length - 1] || searchBaseUrl
+      setServerUrl(focusContextUrl)
+
+      const focused = await focusTreeEntry(result.entryUrl)
+      if (!focused) {
+        toast('No se pudo centrar el resultado en el árbol', 'error')
+      }
+    } catch (err: any) {
+      toast(normalizeError(err) || 'Error al navegar al resultado', 'error')
+    }
+  }
+
   const openFileViewer = async (entry: RemoteEntry) => {
     const ext = entry.name.split('.').pop()?.toLowerCase() || ''
     if (BINARY_EXTENSIONS.has(ext)) {
@@ -889,7 +1082,13 @@ export default function ExplorerView({
     const hasLoadedChildren = Object.prototype.hasOwnProperty.call(childrenCache, entry.url)
 
     return (
-      <div key={entry.url} className={`tree-entry-row ${isMenuOpen ? 'menu-open' : ''}`}>
+      <div
+        key={entry.url}
+        className={`tree-entry-row ${isMenuOpen ? 'menu-open' : ''} ${highlightedEntryUrl === entry.url ? 'search-target' : ''}`}
+        ref={(node) => {
+          treeEntryRefs.current[entry.url] = node
+        }}
+      >
         <div
           className={`tree-item ${isExpanded ? 'expanded' : ''} ${isLoadingChildren ? 'loading' : ''} ${isMenuOpen ? 'menu-open' : ''}`}
           style={{ paddingLeft: 16 + depth * 20 }}
@@ -1247,18 +1446,27 @@ export default function ExplorerView({
                       <>
                         <div className="history-paths-title">
                           Cambios ({remoteLog.selected.paths.length})
+                          {selectedRemoteLogHasOutOfScopePaths && (
+                            <span className="history-paths-note">Atenuado = fuera de esta carpeta</span>
+                          )}
                         </div>
                         {remoteLog.selected.paths.map((p, i) => {
                           const canDiff = p.action !== 'D'
+                          const isInScope = isPathWithinRemoteLogScope(p.path, remoteLogScopePath)
                           return (
                             <div
                               key={i}
-                              className={`history-path-item ${canDiff ? 'history-path-item-clickable' : ''}`}
+                              className={`history-path-item ${canDiff ? 'history-path-item-clickable' : ''} ${!isInScope ? 'history-path-item-outside' : ''}`}
                               onClick={() => canDiff && openRemoteFileDiff(p.path, remoteLog.selected!.revision)}
-                              title={canDiff ? 'Ver diff de este archivo' : ''}
+                              title={!isInScope
+                                ? 'Cambio fuera de la carpeta a la que hiciste show log'
+                                : canDiff ? 'Ver diff de este archivo' : ''}
                             >
                               <span title={p.action}>{ACTION_LABEL[p.action] || p.action}</span>
-                              <span style={{ flex: 1 }}>{p.path}</span>
+                              <span className="history-remote-path" style={{ flex: 1 }}>{p.path}</span>
+                              {!isInScope && (
+                                <span className="history-path-scope-badge">Fuera</span>
+                              )}
                               <button
                                 className="btn btn-ghost"
                                 style={{ padding: '0 5px', fontSize: 10, opacity: 0.6, flexShrink: 0 }}
@@ -1440,7 +1648,20 @@ export default function ExplorerView({
                 </div>
                 <div className="search-results-list">
                   {searchDialog.results.map((r, i) => (
-                    <div key={i} className="search-result-item">
+                    <div
+                      key={i}
+                      className="search-result-item"
+                      role="button"
+                      tabIndex={0}
+                      title={r.kind === 'revision' ? 'Abrir esta revisión en el historial remoto' : 'Ir a este resultado dentro del árbol'}
+                      onClick={() => { void handleSearchResultSelect(r) }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          void handleSearchResultSelect(r)
+                        }
+                      }}
+                    >
                       <span className="search-result-icon">
                         {r.kind === 'revision' ? '🕘' : r.kind === 'dir' ? '📁' : getFileIcon(r.name)}
                       </span>

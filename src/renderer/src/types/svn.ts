@@ -35,6 +35,22 @@ export interface FileChange {
   displayPath: string
 }
 
+export interface BlameLine {
+  lineNum: number
+  revision: number
+  author: string
+  date: string
+  content: string
+}
+
+export interface ConflictContent {
+  mine: string
+  theirs: string
+  base: string
+}
+
+export type ConflictAccept = 'mine-full' | 'theirs-full' | 'working'
+
 export interface LogEntry {
   revision: number
   author: string

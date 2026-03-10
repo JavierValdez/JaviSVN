@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { ActiveTab, Credentials, EditorId, EditorOption, FileChange, LocalRepo, RemoteServer } from './types/svn'
+import { ActiveTab, BlameLine, ConflictAccept, ConflictContent, Credentials, EditorId, EditorOption, FileChange, LocalRepo, RemoteServer } from './types/svn'
 import Sidebar from './components/Sidebar'
 import ChangesView from './components/ChangesView'
 import ExplorerView from './components/ExplorerView'
@@ -50,6 +50,7 @@ declare global {
       remoteMkdir: (parentUrl: string, name: string, message?: string) => Promise<any>
       remoteCreateFile: (parentUrl: string, name: string, content?: string, message?: string) => Promise<any>
       ping: (url: string) => Promise<{ ok: boolean; authError?: boolean; message?: string }>
+      pingWithCreds: (creds: { url: string; username: string; password: string }) => Promise<{ ok: boolean; authError?: boolean; message?: string }>
       getVersion: () => Promise<{ version: string | null; bin: string }>
       getBinPath: () => Promise<{ bin: string; configured: string | null; version: string | null }>
       setBinPath: (binPath: string) => Promise<{ bin: string; version: string | null }>
@@ -58,9 +59,12 @@ declare global {
       status: (repoPath: string) => Promise<FileChange[]>
       diff: (repoPath: string, filePath: string) => Promise<string>
       fileContent: (repoPath: string, filePath: string) => Promise<string>
+      getConflictContent: (repoPath: string, filePath: string) => Promise<ConflictContent>
       revisionFileDiff: (repoPath: string, revision: number, svnPath: string) => Promise<string>
+      blame: (repoPath: string, filePath: string) => Promise<BlameLine[]>
       commit: (repoPath: string, files: string[], message: string) => Promise<any>
       revert: (repoPath: string, files: string[]) => Promise<any>
+      resolve: (repoPath: string, filePath: string, accept: ConflictAccept) => Promise<any>
       log: (repoPath: string, limit?: number, fromRevision?: number) => Promise<any[]>
       info: (path: string) => Promise<any>
       openFile: (repoPath: string, filePath: string) => Promise<void>
@@ -106,7 +110,6 @@ export default function App() {
   const [updateLog, setUpdateLog] = useState('')
   const [showUpdateProgress, setShowUpdateProgress] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
-  const [svnVersion, setSvnVersion] = useState<string | null>(null)
   const [svnMissing, setSvnMissing] = useState(false)
   const [installing, setInstalling] = useState(false)
   const [installLog, setInstallLog] = useState('')
@@ -155,7 +158,6 @@ export default function App() {
         }
 
         const ver = await window.svn.getVersion()
-        setSvnVersion(ver.version)
         if (ver.version === null) setSvnMissing(true)
 
         try {
@@ -311,8 +313,7 @@ export default function App() {
     try {
       const result = await window.svn.installSvn()
       if (result.success) {
-        const ver = await window.svn.getVersion()
-        setSvnVersion(ver.version)
+        await window.svn.getVersion()
         setSvnMissing(false)
         toast('SVN instalado correctamente', 'success')
       }
@@ -480,9 +481,6 @@ export default function App() {
           onOpenInEditor={handleOpenInEditor}
           onDeleteRemote={handleDeleteRemote}
           onRenameRemote={handleRenameRemote}
-          appUpdateState={appUpdateState}
-          onCheckForUpdates={() => window.svn.checkForUpdates().then(setAppUpdateState).catch(() => {})}
-          onDownloadUpdate={() => window.svn.downloadUpdate().then(setAppUpdateState).catch(() => {})}
         />
 
         {/* Main area */}

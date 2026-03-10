@@ -818,6 +818,11 @@ body { overflow: hidden; }
 }
 .search-result-item:last-child { border-bottom: none; }
 .search-result-item:hover { background: var(--bg2); }
+.search-result-item:focus-visible {
+  outline: none;
+  background: #eef6ff;
+  box-shadow: inset 0 0 0 2px rgba(9, 105, 218, 0.22);
+}
 
 .search-result-icon {
   font-size: 14px;
@@ -899,6 +904,13 @@ body { overflow: hidden; }
   z-index: 120;
 }
 
+.tree-entry-row.search-target .tree-item {
+  background: #eef6ff;
+  border-color: rgba(9, 105, 218, 0.34);
+  box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.12), var(--shadow-sm);
+  animation: treeSearchTargetPulse 0.9s ease 1;
+}
+
 .tree-item {
   position: relative;
   display: flex;
@@ -923,6 +935,21 @@ body { overflow: hidden; }
   border-color: var(--border);
 }
 .tree-item.loading { opacity: 0.85; }
+
+@keyframes treeSearchTargetPulse {
+  0% {
+    transform: scale(0.995);
+    box-shadow: 0 0 0 0 rgba(9, 105, 218, 0.24), var(--shadow-sm);
+  }
+  55% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(9, 105, 218, 0.08), var(--shadow-sm);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 3px rgba(9, 105, 218, 0.12), var(--shadow-sm);
+  }
+}
 
 .tree-item-icon { font-size: 15px; flex-shrink: 0; }
 
@@ -1436,6 +1463,15 @@ body { overflow: hidden; }
   padding: 1px 6px;
 }
 
+.history-paths-note {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text3);
+}
+
 .history-files-list { background: var(--bg); }
 
 .history-path-item {
@@ -1449,6 +1485,35 @@ body { overflow: hidden; }
 .history-path-item-clickable { cursor: pointer; transition: background 0.12s; }
 .history-path-item-clickable:hover { background: var(--bg2); }
 .history-path-item-clickable:hover .history-path-diff-hint { opacity: 1; transform: translateX(0); }
+
+.history-path-item-outside {
+  background: rgba(87, 96, 106, 0.05);
+  opacity: 0.58;
+}
+
+.history-path-item-outside.history-path-item-clickable:hover {
+  background: rgba(87, 96, 106, 0.09);
+}
+
+.history-remote-path {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.history-path-item-outside .history-remote-path {
+  color: var(--text2);
+}
+
+.history-path-scope-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: #6b7280;
+  background: rgba(107, 114, 128, 0.12);
+  border: 1px solid rgba(107, 114, 128, 0.2);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
 
 .history-path-diff-hint {
   margin-left: auto;

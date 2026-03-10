@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } from 'electron'
 import { setupAppUpdater } from './updater'
-import { join, resolve, relative } from 'path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { createRequire } from 'module'
 import { spawn, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
@@ -87,6 +87,11 @@ interface StoredRemote {
   createdAt: string
 }
 
+interface StoredRemotesState {
+  exists: boolean
+  remotes: StoredRemote[]
+}
+
 function encryptPassword(password: string): string {
   if (!safeStorage.isEncryptionAvailable()) return password
   return safeStorage.encryptString(password).toString('base64')
@@ -139,11 +144,21 @@ function setCurrentServerUrl(url: string): void {
   storeSet('serverUrl', nextUrl)
 }
 
-function getStoredRemotes(): StoredRemote[] {
-  const raw = storeGet('remoteServers')
-  if (!Array.isArray(raw)) return []
+function clearCurrentServerUrl(): void {
+  const creds = getStoredCredentials()
+  if (creds) {
+    storeSet('credentials', { ...creds, serverUrl: '' })
+  }
+  storeSet('serverUrl', '')
+}
 
-  return raw
+function getStoredRemotesState(): StoredRemotesState {
+  const raw = storeGet('remoteServers')
+  if (!Array.isArray(raw)) return { exists: false, remotes: [] }
+
+  return {
+    exists: true,
+    remotes: raw
     .filter((x: any) => x && typeof x === 'object' && x.id && x.name && x.url)
     .map((x: any) => ({
       id: String(x.id),
@@ -151,6 +166,7 @@ function getStoredRemotes(): StoredRemote[] {
       url: String(x.url),
       createdAt: String(x.createdAt || new Date().toISOString())
     }))
+  }
 }
 
 function saveStoredRemotes(remotes: StoredRemote[]): void {
@@ -158,13 +174,19 @@ function saveStoredRemotes(remotes: StoredRemote[]): void {
 }
 
 function ensureRemotesSeeded(): StoredRemote[] {
-  const existing = getStoredRemotes()
-  if (existing.length > 0) return existing
+  const { exists, remotes } = getStoredRemotesState()
+  if (exists) return remotes
+
+  const currentUrl = getCurrentServerUrl().trim()
+  if (!currentUrl) {
+    saveStoredRemotes([])
+    return []
+  }
 
   const seeded: StoredRemote[] = [{
     id: `remote-${Date.now()}`,
     name: 'Servidor principal',
-    url: getCurrentServerUrl(),
+    url: currentUrl,
     createdAt: new Date().toISOString()
   }]
   saveStoredRemotes(seeded)
@@ -176,6 +198,90 @@ const BASE_REPO_PATH = join(homedir(), 'Documents', 'JaviSvn')
 
 if (!existsSync(BASE_REPO_PATH)) {
   mkdirSync(BASE_REPO_PATH, { recursive: true })
+}
+
+function normalizeRepoUrl(url: string): string {
+  return String(url || '').trim().replace(/\/+$/g, '')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function readUtf8IfExists(path: string): string {
+  try {
+    if (!existsSync(path)) return ''
+    return readFileSync(path, 'utf-8')
+  } catch {
+    return ''
+  }
+}
+
+function resolveRepoRelativeTarget(repoPath: string, filePath: string): {
+  repoAbs: string
+  targetAbs: string
+  relativePath: string
+} {
+  const repoAbs = resolve(repoPath)
+  const targetAbs = resolve(repoPath, filePath)
+  const relativePath = relative(repoAbs, targetAbs)
+
+  if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+    throw new Error('Ruta fuera del repositorio')
+  }
+
+  return { repoAbs, targetAbs, relativePath }
+}
+
+function sanitizeLocalRepoName(targetName: string): string {
+  const safeName = String(targetName || '').trim()
+  if (!safeName) throw new Error('El nombre del directorio local es requerido')
+  if (safeName === '.' || safeName === '..') {
+    throw new Error('Nombre de directorio inválido')
+  }
+  if (/[<>:"/\\|?*\u0000-\u001f]/.test(safeName)) {
+    throw new Error('El nombre del directorio local contiene caracteres no permitidos')
+  }
+  return safeName
+}
+
+let localRepoUrlIndexCache: { expiresAt: number; map: Map<string, string> } | null = null
+
+function invalidateLocalRepoUrlIndexCache(): void {
+  localRepoUrlIndexCache = null
+}
+
+async function getLocalRepoUrlIndex(): Promise<Map<string, string>> {
+  if (localRepoUrlIndexCache && localRepoUrlIndexCache.expiresAt > Date.now()) {
+    return new Map(localRepoUrlIndexCache.map)
+  }
+
+  const index = new Map<string, string>()
+  if (!existsSync(BASE_REPO_PATH)) return index
+
+  const entries = readdirSync(BASE_REPO_PATH)
+  for (const entry of entries) {
+    const fullPath = join(BASE_REPO_PATH, entry)
+    try {
+      const stat = statSync(fullPath)
+      if (!stat.isDirectory()) continue
+      if (!existsSync(join(fullPath, '.svn'))) continue
+
+      const { stdout } = await runSvn(['info', '--xml', fullPath])
+      const parsed = await parseXml(stdout)
+      const repoUrl = normalizeRepoUrl(parsed.info?.entry?.url || '')
+      if (repoUrl) index.set(repoUrl, fullPath)
+    } catch {
+      // ignore invalid working copies
+    }
+  }
+
+  localRepoUrlIndexCache = {
+    expiresAt: Date.now() + 5000,
+    map: index
+  }
+
+  return new Map(index)
 }
 
 // ─── Find svn binary ─────────────────────────────────────────────────────────
@@ -548,15 +654,16 @@ function runSvnOnce(
       reject(err)
     }
 
-    if (options.timeoutMs && options.timeoutMs > 0) {
+    const timeoutMs = options.timeoutMs ?? 0
+    if (timeoutMs > 0) {
       timeoutId = setTimeout(() => {
         const cmd = args[0] || 'svn'
         proc.kill('SIGTERM')
         setTimeout(() => {
           if (!settled) proc.kill('SIGKILL')
         }, 1500)
-        finishReject(new Error(`Tiempo de espera agotado (${Math.ceil(options.timeoutMs / 1000)}s) al ejecutar SVN (${cmd})`))
-      }, options.timeoutMs)
+        finishReject(new Error(`Tiempo de espera agotado (${Math.ceil(timeoutMs / 1000)}s) al ejecutar SVN (${cmd})`))
+      }, timeoutMs)
     }
 
     proc.stdout.on('data', (d: Buffer) => {
@@ -721,8 +828,15 @@ ipcMain.handle('remotes:delete', (_e, remoteId: string) => {
   if (!id) throw new Error('Remote inválido')
 
   const remotes = ensureRemotesSeeded()
+  const deleted = remotes.find((r) => r.id === id)
   const next = remotes.filter((r) => r.id !== id)
   saveStoredRemotes(next)
+
+  if (deleted?.url === getCurrentServerUrl()) {
+    if (next.length > 0) setCurrentServerUrl(next[0].url)
+    else clearCurrentServerUrl()
+  }
+
   return true
 })
 
@@ -850,6 +964,7 @@ ipcMain.handle('repos:delete', (_e, repoPath: string) => {
   }
   if (!existsSync(repoPath)) throw new Error('El repositorio no existe')
   rmSync(repoPath, { recursive: true, force: true })
+  invalidateLocalRepoUrlIndexCache()
 })
 
 // ─── IPC: SVN List (remote) ───────────────────────────────────────────────────
@@ -863,26 +978,23 @@ ipcMain.handle('svn:list', async (_e, url: string) => {
   if (!entries) return []
 
   const arr = Array.isArray(entries) ? entries : [entries]
-
-  // Get local repos to check which are already checked out
-  const localEntries = existsSync(BASE_REPO_PATH) ? readdirSync(BASE_REPO_PATH) : []
-  const localRepoNames = new Set(localEntries.map((e) => e.toLowerCase()))
+  const normalizedBaseUrl = normalizeRepoUrl(url)
+  const localRepoUrlIndex = await getLocalRepoUrlIndex()
 
   return arr.map((e: any) => {
-    const name = e.name?._?.trim() || e.name || ''
+    const name = String(e.name?._?.trim() || e.name || '').replace(/\/$/, '')
     const isDir = e.$?.kind === 'dir'
-    const repoName = isDir ? name.replace(/\/$/, '') : name
+    const entryUrl = `${normalizedBaseUrl}/${name}`
+    const localPath = localRepoUrlIndex.get(normalizeRepoUrl(entryUrl))
     return {
       name,
-      url: url.replace(/\/$/, '') + '/' + name,
+      url: entryUrl,
       kind: e.$?.kind || 'file',
       revision: parseInt(e.commit?.$?.revision || '0'),
       author: e.commit?.author || '',
       date: e.commit?.date || new Date().toISOString(),
-      isCheckedOut: localRepoNames.has(repoName.toLowerCase()),
-      localPath: localRepoNames.has(repoName.toLowerCase())
-        ? join(BASE_REPO_PATH, repoName)
-        : undefined
+      isCheckedOut: Boolean(localPath) && isDir,
+      localPath: localPath && isDir ? localPath : undefined
     }
   })
 })
@@ -918,8 +1030,12 @@ async function runConcurrent(
 // Stream `svn cat <url>` and resolve true as soon as `query` is found; kills early
 function catSearchFile(fileUrl: string, query: string): Promise<boolean> {
   return new Promise((resolve) => {
+    const env = { ...buildEnvWithExtraPath(), LANG: 'en_US.UTF-8' } as NodeJS.ProcessEnv
+    const confPath = getLegacyOpenSslConfPath()
+    if (confPath) env.OPENSSL_CONF = confPath
+
     const proc = spawn(SVN_BIN, ['cat', fileUrl, ...getSvnAuthArgs()], {
-      env: { ...buildEnvWithExtraPath(), LANG: 'en_US.UTF-8' }
+      env
     })
 
     let buffer = ''
@@ -964,9 +1080,9 @@ ipcMain.handle('svn:searchRemote', async (event, url: string, query: string, dee
   // Step 1 — BFS parallel listing: 5 dirs at a time, 15s timeout each
   // Avoids the single huge svn list --depth infinity call that times out on large repos
   type SearchEntry = { path: string; name: string; kind: 'dir' | 'file'; entryUrl: string }
-  const baseUrl = url.replace(/\/$/, '')
+  const baseUrl = normalizeRepoUrl(url)
   const allEntries: SearchEntry[] = []
-  const dirQueue: string[] = [url]
+  const dirQueue: string[] = [baseUrl]
   let processedDirs = 0
   const LIST_BATCH = 5
 
@@ -993,7 +1109,7 @@ ipcMain.handle('svn:searchRemote', async (event, url: string, query: string, dee
       const listArr = Array.isArray(rawList) ? rawList : (rawList ? [rawList] : [])
 
       for (const list of listArr) {
-        const listPath = ((list.$?.path as string) || dirUrl).replace(/\/$/, '')
+        const listPath = normalizeRepoUrl(dirUrl)
         const entries = list.entry
         if (!entries) continue
         const arr = Array.isArray(entries) ? entries : [entries]
@@ -1004,7 +1120,7 @@ ipcMain.handle('svn:searchRemote', async (event, url: string, query: string, dee
           if (!name) continue
           const kind: 'dir' | 'file' = e.$?.kind === 'dir' ? 'dir' : 'file'
           const entryUrl = listPath + '/' + name
-          const relativePath = entryUrl.replace(baseUrl, '').replace(/^\//, '')
+          const relativePath = entryUrl.replace(new RegExp(`^${escapeRegExp(baseUrl)}/?`), '')
           allEntries.push({ path: relativePath, name, kind, entryUrl })
           if (kind === 'dir') dirQueue.push(entryUrl)
         }
@@ -1046,7 +1162,7 @@ ipcMain.handle('svn:searchRemote', async (event, url: string, query: string, dee
           name: `r${entry.revision}`,
           kind: 'revision' as const,
           matchType: 'comment' as const,
-          entryUrl: url,
+          entryUrl: baseUrl,
           revision: entry.revision,
           revisionMessage: entry.message
         })
@@ -1131,10 +1247,11 @@ ipcMain.handle('svn:remoteCreateFile', async (_e, parentUrl: string, name: strin
 
 // ─── IPC: SVN Checkout ───────────────────────────────────────────────────────
 ipcMain.handle('svn:checkout', async (_e, url: string, targetName: string) => {
-  const targetPath = join(BASE_REPO_PATH, targetName)
+  const safeTargetName = sanitizeLocalRepoName(targetName)
+  const targetPath = join(BASE_REPO_PATH, safeTargetName)
 
   if (existsSync(targetPath)) {
-    throw new Error(`Ya existe un directorio con el nombre "${targetName}"`)
+    throw new Error(`Ya existe un directorio con el nombre "${safeTargetName}"`)
   }
 
   try {
@@ -1146,6 +1263,7 @@ ipcMain.handle('svn:checkout', async (_e, url: string, targetName: string) => {
         onErrorData: (chunk) => mainWindow.webContents.send('svn:checkout-progress', chunk)
       }
     )
+    invalidateLocalRepoUrlIndexCache()
     return { success: true, path: targetPath }
   } catch (err: any) {
     const msg = String(err?.message || '').trim()
@@ -1239,14 +1357,8 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
   const expandedFromUnversionedDirs: Array<{ path: string; displayPath: string; status: string; checked: boolean }> = []
 
   const walkUnversionedDir = (absDir: string, relDir: string) => {
-    let children: ReturnType<typeof readdirSync>
     try {
-      children = readdirSync(absDir, { withFileTypes: true })
-    } catch {
-      return
-    }
-
-    for (const child of children as any[]) {
+      for (const child of readdirSync(absDir, { withFileTypes: true })) {
       if (child.name === '.svn') continue
 
       const childAbs = join(absDir, child.name)
@@ -1268,6 +1380,9 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
           checked: false
         })
       }
+    }
+    } catch {
+      return
     }
   }
 
@@ -1296,13 +1411,7 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
 
 // ─── IPC: Local file content (for unversioned preview) ──────────────────────
 ipcMain.handle('svn:fileContent', async (_e, repoPath: string, filePath: string) => {
-  const repoAbs = resolve(repoPath)
-  const targetAbs = resolve(repoPath, filePath)
-  const rel = relative(repoAbs, targetAbs)
-
-  if (rel.startsWith('..') || rel.includes(':')) {
-    throw new Error('Ruta fuera del repositorio')
-  }
+  const { targetAbs } = resolveRepoRelativeTarget(repoPath, filePath)
 
   if (!existsSync(targetAbs)) return '(archivo no encontrado)'
   const st = statSync(targetAbs)
@@ -1314,6 +1423,38 @@ ipcMain.handle('svn:fileContent', async (_e, repoPath: string, filePath: string)
   } catch {
     return '(no se pudo leer el contenido del archivo)'
   }
+})
+
+ipcMain.handle('svn:getConflictContent', async (_e, repoPath: string, filePath: string) => {
+  const { targetAbs } = resolveRepoRelativeTarget(repoPath, filePath)
+  const dirPath = dirname(targetAbs)
+  const fileName = basename(targetAbs)
+  const minePath = join(dirPath, `${fileName}.mine`)
+  const revisionPattern = new RegExp(`^${escapeRegExp(fileName)}\\.r(\\d+)$`)
+
+  const revisionFiles = readdirSync(dirPath)
+    .map((entry) => {
+      const match = entry.match(revisionPattern)
+      if (!match) return null
+      return {
+        path: join(dirPath, entry),
+        revision: Number.parseInt(match[1], 10) || 0
+      }
+    })
+    .filter((x): x is { path: string; revision: number } => x !== null)
+    .sort((a, b) => a.revision - b.revision)
+
+  const basePath = revisionFiles[0]?.path || ''
+  const theirsPath = revisionFiles[revisionFiles.length - 1]?.path || ''
+  const mine = readUtf8IfExists(minePath) || readUtf8IfExists(targetAbs)
+  const base = readUtf8IfExists(basePath)
+  const theirs = readUtf8IfExists(theirsPath)
+
+  if (!mine && !base && !theirs) {
+    throw new Error('No se encontraron archivos auxiliares de conflicto para ese archivo')
+  }
+
+  return { mine, base, theirs }
 })
 
 function mapStatus(item: string): string {
@@ -1349,6 +1490,41 @@ ipcMain.handle('svn:diff', async (_e, repoPath: string, filePath: string) => {
     }
     return '(no se pudo obtener el diff)'
   }
+})
+
+ipcMain.handle('svn:blame', async (_e, repoPath: string, filePath: string) => {
+  const { targetAbs, relativePath } = resolveRepoRelativeTarget(repoPath, filePath)
+
+  if (!existsSync(targetAbs)) {
+    throw new Error('El archivo no existe')
+  }
+  if (!statSync(targetAbs).isFile()) {
+    throw new Error('Blame solo está disponible para archivos')
+  }
+
+  const { stdout } = await runSvn(['blame', '--xml', relativePath], {
+    cwd: repoPath,
+    timeoutMs: 60000
+  })
+  const parsed = await parseXml(stdout)
+  const entries = parsed.blame?.target?.entry
+  const blameEntries = entries ? (Array.isArray(entries) ? entries : [entries]) : []
+  const normalizedContent = readUtf8IfExists(targetAbs).replace(/\r\n/g, '\n')
+  const lines = normalizedContent.split('\n')
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  if (lines.length === 0) lines.push('')
+
+  return lines.map((content, index) => {
+    const entry = blameEntries[index]
+    const commit = entry?.commit
+    return {
+      lineNum: index + 1,
+      revision: Number.parseInt(commit?.$?.revision || '0', 10) || 0,
+      author: String(commit?.author || ''),
+      date: String(commit?.date || ''),
+      content
+    }
+  })
 })
 
 // ─── IPC: SVN Diff at specific revision ──────────────────────────────────────
@@ -1493,6 +1669,19 @@ ipcMain.handle('svn:commit', async (_e, repoPath: string, files: string[], messa
 // ─── IPC: SVN Revert ─────────────────────────────────────────────────────────
 ipcMain.handle('svn:revert', async (_e, repoPath: string, files: string[]) => {
   const { stdout } = await runSvn(['revert', '--recursive', ...files], { cwd: repoPath })
+  return { success: true, output: stdout }
+})
+
+ipcMain.handle('svn:resolve', async (_e, repoPath: string, filePath: string, accept: string) => {
+  const safeAccept = String(accept || '').trim()
+  if (safeAccept !== 'mine-full' && safeAccept !== 'theirs-full' && safeAccept !== 'working') {
+    throw new Error('Resolución no soportada')
+  }
+
+  const { relativePath } = resolveRepoRelativeTarget(repoPath, filePath)
+  const { stdout } = await runSvn(['resolve', '--accept', safeAccept, relativePath], {
+    cwd: repoPath
+  })
   return { success: true, output: stdout }
 })
 

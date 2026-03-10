@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { EditorId, EditorOption, LocalRepo, RemoteServer } from '../types/svn'
-import { AppUpdateState } from '../App'
 import appIcon from '../assets/icon.png'
 
 interface Props {
@@ -19,9 +18,6 @@ interface Props {
   onOpenInEditor: (editorId: EditorId, path: string) => void
   onDeleteRemote: (remote: RemoteServer) => void
   onRenameRemote: (remote: RemoteServer) => void
-  appUpdateState: AppUpdateState | null
-  onCheckForUpdates: () => void
-  onDownloadUpdate: () => void
 }
 
 function timeAgo(dateStr: string): string {
@@ -50,10 +46,7 @@ export default function Sidebar({
   availableEditors,
   onOpenInEditor,
   onDeleteRemote,
-  onRenameRemote,
-  appUpdateState,
-  onCheckForUpdates,
-  onDownloadUpdate
+  onRenameRemote
 }: Props) {
   const [openMenuPath, setOpenMenuPath] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)

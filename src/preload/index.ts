@@ -48,12 +48,17 @@ const svnAPI = {
   status: (repoPath: string) => ipcRenderer.invoke('svn:status', repoPath),
   diff: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:diff', repoPath, filePath),
   fileContent: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:fileContent', repoPath, filePath),
+  getConflictContent: (repoPath: string, filePath: string) =>
+    ipcRenderer.invoke('svn:getConflictContent', repoPath, filePath),
   revisionFileDiff: (repoPath: string, revision: number, svnPath: string) =>
     ipcRenderer.invoke('svn:revisionFileDiff', repoPath, revision, svnPath),
+  blame: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:blame', repoPath, filePath),
   commit: (repoPath: string, files: string[], message: string) =>
     ipcRenderer.invoke('svn:commit', repoPath, files, message),
   revert: (repoPath: string, files: string[]) =>
     ipcRenderer.invoke('svn:revert', repoPath, files),
+  resolve: (repoPath: string, filePath: string, accept: 'mine-full' | 'theirs-full' | 'working') =>
+    ipcRenderer.invoke('svn:resolve', repoPath, filePath, accept),
   log: (repoPath: string, limit?: number, fromRevision?: number) =>
     ipcRenderer.invoke('svn:log', repoPath, limit, fromRevision),
   info: (path: string) => ipcRenderer.invoke('svn:info', path),

@@ -3,6 +3,7 @@ import { FileChange, LocalRepo } from '../types/svn'
 import DiffViewer from './DiffViewer'
 import BlameView from './BlameView'
 import ConflictResolver from './ConflictResolver'
+import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
 
 interface Props {
   repo: LocalRepo
@@ -42,6 +43,10 @@ const STATUS_ICON: Record<string, string> = {
   '!': '❗'
 }
 
+function isPdfFile(path: string): boolean {
+  return /\.pdf$/i.test(path)
+}
+
 export default function ChangesView({ repo, changes, loading, onRefresh, toast }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -52,6 +57,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   const [reverting, setReverting] = useState(false)
   const [blameFile, setBlameFile] = useState<string | null>(null)
   const [conflictFile, setConflictFile] = useState<string | null>(null)
+  const [pdfPreview, setPdfPreview] = useState<PdfPreviewState | null>(null)
 
   const changesSignature = changes
     .map((c) => `${c.status}:${c.path}`)
@@ -73,13 +79,47 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     setDiff('')
     setBlameFile(null)
     setConflictFile(null)
+    setPdfPreview(null)
   }, [repo.path, changesSignature])
+
+  const openPdfPreview = async (filePath: string) => {
+    setPdfPreview({
+      title: filePath.split('/').pop() || filePath,
+      subtitle: `${repo.name} · ${filePath}`,
+      fileUrl: null,
+      loading: true,
+      error: null
+    })
+
+    try {
+      const preview = await window.svn.getLocalPreviewFile(repo.path, filePath)
+      setPdfPreview((prev) => prev ? {
+        ...prev,
+        title: preview.name,
+        fileUrl: preview.fileUrl,
+        loading: false
+      } : prev)
+    } catch (err: any) {
+      setPdfPreview((prev) => prev ? {
+        ...prev,
+        loading: false,
+        error: err.message || 'No se pudo abrir el PDF'
+      } : prev)
+    }
+  }
 
   const loadDiff = async (filePath: string) => {
     setSelectedFile(filePath)
+    const current = changes.find((c) => c.path === filePath)
+    if (current && isPdfFile(filePath) && current.status !== 'D' && current.status !== '!') {
+      setDiff('')
+      setDiffLoading(false)
+      await openPdfPreview(filePath)
+      return
+    }
+
     setDiffLoading(true)
     try {
-      const current = changes.find((c) => c.path === filePath)
       let d = ''
       if (current?.status === '?') {
         const content = await window.svn.fileContent(repo.path, filePath)
@@ -162,6 +202,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   })
 
   const canShowBlame = selectedChange ? !['?', 'A', 'D', '!', 'C'].includes(selectedChange.status) : false
+  const canPreviewPdf = Boolean(selectedChange && isPdfFile(selectedChange.path) && !['D', '!'].includes(selectedChange.status))
 
   return (
     <>
@@ -283,11 +324,33 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
                 ⚠ Resolver conflicto
               </button>
             )}
+            {canPreviewPdf && (
+              <button
+                className="btn btn-default"
+                style={{ padding: '4px 10px', fontSize: 11 }}
+                onClick={() => openPdfPreview(selectedChange.path)}
+                title="Abrir visor PDF"
+              >
+                📕 Ver PDF
+              </button>
+            )}
           </div>
         )}
         {diffLoading ? (
           <div className="diff-empty">
             <div className="spinner spinner-lg" />
+          </div>
+        ) : canPreviewPdf ? (
+          <div className="diff-empty">
+            <div className="diff-empty-icon">📕</div>
+            <div className="diff-empty-text">Este archivo se abre en el visor PDF integrado</div>
+            <button
+              className="btn btn-default"
+              style={{ marginTop: 8 }}
+              onClick={() => selectedChange && openPdfPreview(selectedChange.path)}
+            >
+              Abrir visor PDF
+            </button>
           </div>
         ) : selectedFile ? (
           <DiffViewer diff={diff} filePath={selectedFile} />
@@ -322,6 +385,10 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
           toast={toast}
         />
       )}
+      <PdfPreviewDialog
+        state={pdfPreview}
+        onClose={() => setPdfPreview(null)}
+      />
     </>
   )
 }

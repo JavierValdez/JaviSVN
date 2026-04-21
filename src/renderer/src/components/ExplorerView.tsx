@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Credentials, LogEntry, RemoteEntry, RemoteSearchResult, RemoteServer } from '../types/svn'
 import DiffViewer from './DiffViewer'
+import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
 
 interface Props {
   credentials: Credentials | null
@@ -86,7 +87,7 @@ interface EntryMenuState {
   left: number
 }
 
-type EntrySortMode = 'revision' | 'date'
+type EntrySortMode = 'name' | 'revision' | 'date'
 
 const BINARY_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg',
@@ -100,6 +101,10 @@ const ACTION_LABEL: Record<string, string> = {
   A: '➕',
   D: '🗑️',
   R: '🔄'
+}
+
+function isPdfFile(path: string): boolean {
+  return /\.pdf$/i.test(path)
 }
 
 function getSvnApi(): any {
@@ -220,7 +225,10 @@ export default function ExplorerView({
         return left.kind === 'dir' ? -1 : 1
       }
 
-      if (sortMode === 'date') {
+      if (sortMode === 'name') {
+        const nameDiff = left.name.localeCompare(right.name, 'es', { numeric: true, sensitivity: 'base' }) * sign
+        if (nameDiff !== 0) return nameDiff
+      } else if (sortMode === 'date') {
         const dateDiff = (getEntryDateValue(left) - getEntryDateValue(right)) * sign
         if (dateDiff !== 0) return dateDiff
       } else {
@@ -281,6 +289,7 @@ export default function ExplorerView({
     open: false, url: '', name: '', content: null, loading: false, error: null
   })
   const [remoteFileDiff, setRemoteFileDiff] = useState<RemoteFileDiffState | null>(null)
+  const [pdfPreview, setPdfPreview] = useState<PdfPreviewState | null>(null)
   const remoteLogScopePath = getRemoteLogScopePath(remoteLog.repoRoot, remoteLog.url)
   const selectedRemoteLogHasOutOfScopePaths = Boolean(
     remoteLog.selected?.paths.some((p) => !isPathWithinRemoteLogScope(p.path, remoteLogScopePath))
@@ -911,6 +920,33 @@ export default function ExplorerView({
 
   const openFileViewer = async (entry: RemoteEntry) => {
     const ext = entry.name.split('.').pop()?.toLowerCase() || ''
+    if (ext === 'pdf') {
+      setFileViewer({ open: false, url: '', name: '', content: null, loading: false, error: null })
+      setPdfPreview({
+        title: entry.name,
+        subtitle: entry.url,
+        fileUrl: null,
+        loading: true,
+        error: null
+      })
+      try {
+        const svn = getSvnApi()
+        const preview = await svn.getRemotePreviewFile(entry.url, entry.name)
+        setPdfPreview((prev) => prev ? {
+          ...prev,
+          title: preview.name,
+          fileUrl: preview.fileUrl,
+          loading: false
+        } : prev)
+      } catch (err: any) {
+        setPdfPreview((prev) => prev ? {
+          ...prev,
+          loading: false,
+          error: normalizeError(err) || 'Error al abrir el PDF'
+        } : prev)
+      }
+      return
+    }
     if (BINARY_EXTENSIONS.has(ext)) {
       setFileViewer({ open: true, url: entry.url, name: entry.name, content: null, loading: false, error: `No se puede previsualizar archivos binarios (.${ext})` })
       return
@@ -939,10 +975,45 @@ export default function ExplorerView({
     }
   }
 
+  const openRemotePdfRevision = async (svnPath: string, revision: number) => {
+    const fileName = svnPath.split('/').filter(Boolean).pop() || svnPath
+    if (!remoteLog.repoRoot) {
+      toast('No se pudo obtener la URL base para previsualizar el PDF', 'error')
+      return
+    }
+
+    setPdfPreview({
+      title: fileName,
+      subtitle: `${remoteLog.title} · ${svnPath}`,
+      fileUrl: null,
+      loading: true,
+      error: null,
+      badge: `r${revision}`
+    })
+
+    try {
+      const svn = getSvnApi()
+      const previewUrl = `${remoteLog.repoRoot}${svnPath}@${revision}`
+      const preview = await svn.getRemotePreviewFile(previewUrl, fileName)
+      setPdfPreview((prev) => prev ? {
+        ...prev,
+        title: preview.name,
+        fileUrl: preview.fileUrl,
+        loading: false
+      } : prev)
+    } catch (err: any) {
+      setPdfPreview((prev) => prev ? {
+        ...prev,
+        loading: false,
+        error: normalizeError(err) || 'Error al abrir el PDF'
+      } : prev)
+    }
+  }
+
   const openEntryMenuAtButton = (entry: RemoteEntry, button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect()
     const menuWidth = 220
-    const menuHeight = entry.kind === 'dir' ? 340 : 220
+    const menuHeight = entry.kind === 'dir' ? 340 : 268
     const margin = 12
     const left = Math.max(margin, Math.min(window.innerWidth - menuWidth - margin, rect.right - menuWidth))
     const top = rect.bottom + 6 + menuHeight > window.innerHeight - margin
@@ -1006,6 +1077,20 @@ export default function ExplorerView({
         {!isDir && (
           <>
             <div className="tree-dropdown-divider" />
+            <button
+              className="tree-dropdown-item"
+              onClick={() => {
+                setEntryMenu(null)
+                const svn = getSvnApi()
+                svn.downloadFile(entry.url, entry.name)
+                  .then((res: any) => {
+                    if (!res?.canceled) toast('Archivo descargado', 'success')
+                  })
+                  .catch((err: any) => toast(normalizeError(err), 'error'))
+              }}
+            >
+              ⬇ Descargar archivo
+            </button>
             <button
               className="tree-dropdown-item"
               onClick={() => {
@@ -1251,7 +1336,12 @@ export default function ExplorerView({
       {/* Column headers */}
       {tree.length > 0 && (
         <div className="explorer-col-header">
-          <div className="explorer-col-name">Nombre</div>
+          <button
+            className={`explorer-col-name explorer-col-btn${entrySort === 'name' ? ' active' : ''}`}
+            onClick={() => handleSortClick('name')}
+          >
+            Nombre {entrySort === 'name' ? (sortDir === 'desc' ? '▼' : '▲') : '⇅'}
+          </button>
           <button
             className={`explorer-col-btn${entrySort === 'date' ? ' active' : ''}`}
             onClick={() => handleSortClick('date')}
@@ -1452,15 +1542,16 @@ export default function ExplorerView({
                         </div>
                         {remoteLog.selected.paths.map((p, i) => {
                           const canDiff = p.action !== 'D'
+                          const opensPdf = canDiff && isPdfFile(p.path)
                           const isInScope = isPathWithinRemoteLogScope(p.path, remoteLogScopePath)
                           return (
                             <div
                               key={i}
                               className={`history-path-item ${canDiff ? 'history-path-item-clickable' : ''} ${!isInScope ? 'history-path-item-outside' : ''}`}
-                              onClick={() => canDiff && openRemoteFileDiff(p.path, remoteLog.selected!.revision)}
+                              onClick={() => canDiff && (opensPdf ? openRemotePdfRevision(p.path, remoteLog.selected!.revision) : openRemoteFileDiff(p.path, remoteLog.selected!.revision))}
                               title={!isInScope
                                 ? 'Cambio fuera de la carpeta a la que hiciste show log'
-                                : canDiff ? 'Ver diff de este archivo' : ''}
+                                : canDiff ? (opensPdf ? 'Ver PDF de esta revisión' : 'Ver diff de este archivo') : ''}
                             >
                               <span title={p.action}>{ACTION_LABEL[p.action] || p.action}</span>
                               <span className="history-remote-path" style={{ flex: 1 }}>{p.path}</span>
@@ -1506,7 +1597,7 @@ export default function ExplorerView({
                                   </button>
                                 )
                               })()}
-                              {canDiff && <span className="history-path-diff-hint">Ver diff →</span>}
+                              {canDiff && <span className="history-path-diff-hint">{opensPdf ? 'Ver PDF →' : 'Ver diff →'}</span>}
                             </div>
                           )
                         })}
@@ -1986,6 +2077,10 @@ export default function ExplorerView({
           </div>
         </div>
       )}
+      <PdfPreviewDialog
+        state={pdfPreview}
+        onClose={() => setPdfPreview(null)}
+      />
     </div>
   )
 }

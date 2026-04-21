@@ -60,6 +60,8 @@ declare global {
       status: (repoPath: string) => Promise<FileChange[]>
       diff: (repoPath: string, filePath: string) => Promise<string>
       fileContent: (repoPath: string, filePath: string) => Promise<string>
+      getLocalPreviewFile: (repoPath: string, filePath: string) => Promise<{ path: string; name: string; fileUrl: string }>
+      getRemotePreviewFile: (url: string, defaultName: string) => Promise<{ path: string; name: string; fileUrl: string }>
       getConflictContent: (repoPath: string, filePath: string) => Promise<ConflictContent>
       revisionFileDiff: (repoPath: string, revision: number, svnPath: string) => Promise<string>
       blame: (repoPath: string, filePath: string) => Promise<BlameLine[]>

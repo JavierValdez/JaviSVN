@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { LocalRepo, LogEntry } from '../types/svn'
 import DiffViewer from './DiffViewer'
+import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
 
 interface Props {
   repo: LocalRepo
@@ -45,6 +46,10 @@ function splitPath(fullPath: string): { dir: string; file: string } {
   return { dir, file }
 }
 
+function isPdfFile(path: string): boolean {
+  return /\.pdf$/i.test(path)
+}
+
 interface FileDiffState {
   svnPath: string
   fileName: string
@@ -60,9 +65,11 @@ export default function HistoryView({ repo, toast }: Props) {
   const [selected, setSelected] = useState<LogEntry | null>(null)
   const [fileDiff, setFileDiff] = useState<FileDiffState | null>(null)
   const [repoInfo, setRepoInfo] = useState<{ url: string; rootUrl: string } | null>(null)
+  const [pdfPreview, setPdfPreview] = useState<PdfPreviewState | null>(null)
 
   useEffect(() => {
     setFileDiff(null)
+    setPdfPreview(null)
     loadLog()
   }, [repo.path])
 
@@ -136,6 +143,40 @@ export default function HistoryView({ repo, toast }: Props) {
     } catch (err: any) {
       toast(err.message || 'Error al obtener el diff', 'error')
       setFileDiff(null)
+    }
+  }
+
+  const openPdfAtRevision = async (svnPath: string, revision: number) => {
+    const fileName = svnPath.split('/').filter(Boolean).pop() || svnPath
+    if (!repoInfo?.rootUrl) {
+      toast('No se pudo obtener la URL base para previsualizar el PDF', 'error')
+      return
+    }
+
+    setPdfPreview({
+      title: fileName,
+      subtitle: `${repo.name} · ${svnPath}`,
+      fileUrl: null,
+      loading: true,
+      error: null,
+      badge: `r${revision}`
+    })
+
+    try {
+      const previewUrl = `${repoInfo.rootUrl}${svnPath}@${revision}`
+      const preview = await window.svn.getRemotePreviewFile(previewUrl, fileName)
+      setPdfPreview((prev) => prev ? {
+        ...prev,
+        title: preview.name,
+        fileUrl: preview.fileUrl,
+        loading: false
+      } : prev)
+    } catch (err: any) {
+      setPdfPreview((prev) => prev ? {
+        ...prev,
+        loading: false,
+        error: err.message || 'No se pudo abrir el PDF'
+      } : prev)
     }
   }
 
@@ -275,12 +316,13 @@ export default function HistoryView({ repo, toast }: Props) {
                     const meta = ACTION_META[p.action] || { label: p.action, cls: 'action-other' }
                     const { dir, file } = splitPath(p.path)
                     const canDiff = p.action !== 'D'
+                    const opensPdf = canDiff && isPdfFile(p.path)
                     return (
                       <div
                         key={i}
                         className={`history-path-item ${canDiff ? 'history-path-item-clickable' : ''}`}
-                        onClick={() => canDiff && openFileDiff(p.path, selected.revision)}
-                        title={canDiff ? 'Ver diff de este archivo' : ''}
+                        onClick={() => canDiff && (opensPdf ? openPdfAtRevision(p.path, selected.revision) : openFileDiff(p.path, selected.revision))}
+                        title={canDiff ? (opensPdf ? 'Ver PDF de esta revisión' : 'Ver diff de este archivo') : ''}
                       >
                         <span className={`history-action-badge ${meta.cls}`}>{meta.label}</span>
                         <div className="history-path-text" style={{ flex: 1 }}>
@@ -321,7 +363,7 @@ export default function HistoryView({ repo, toast }: Props) {
                             </button>
                           )
                         })()}
-                        {canDiff && <span className="history-path-diff-hint">Ver diff →</span>}
+                        {canDiff && <span className="history-path-diff-hint">{opensPdf ? 'Ver PDF →' : 'Ver diff →'}</span>}
                       </div>
                     )
                   })}
@@ -374,6 +416,10 @@ export default function HistoryView({ repo, toast }: Props) {
           </div>
         </div>
       )}
+      <PdfPreviewDialog
+        state={pdfPreview}
+        onClose={() => setPdfPreview(null)}
+      />
     </div>
   )
 }

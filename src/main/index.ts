@@ -6,6 +6,7 @@ import { createRequire } from 'module'
 import { spawn, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
 import { homedir, tmpdir } from 'os'
+import { pathToFileURL } from 'node:url'
 
 const _require = createRequire(import.meta.url)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -232,6 +233,37 @@ function resolveRepoRelativeTarget(repoPath: string, filePath: string): {
   }
 
   return { repoAbs, targetAbs, relativePath }
+}
+
+function sanitizePreviewFileName(value: string, fallback = 'preview.bin'): string {
+  const baseName = basename(String(value || '').trim()) || fallback
+  const sanitized = baseName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim()
+  return sanitized || fallback
+}
+
+function buildPreviewFileResponse(filePath: string, name?: string): { path: string; name: string; fileUrl: string } {
+  const safeName = sanitizePreviewFileName(name || basename(filePath))
+  return {
+    path: filePath,
+    name: safeName,
+    fileUrl: pathToFileURL(filePath).toString()
+  }
+}
+
+async function exportRemotePreviewFile(url: string, suggestedName?: string): Promise<{ path: string; name: string; fileUrl: string }> {
+  const safeUrl = String(url || '').trim()
+  if (!safeUrl) throw new Error('La URL del archivo es requerida')
+
+  const fallbackName = basename(safeUrl.replace(/\/+$/g, '')) || 'preview.bin'
+  const safeName = sanitizePreviewFileName(suggestedName || fallbackName)
+  const previewDir = mkdtempSync(join(tmpdir(), 'javisvn-preview-'))
+  const targetPath = join(previewDir, safeName)
+
+  await runSvn(['export', '--force', safeUrl, targetPath], {
+    timeoutMs: 5 * 60 * 1000
+  })
+
+  return buildPreviewFileResponse(targetPath, safeName)
 }
 
 function sanitizeLocalRepoName(targetName: string): string {
@@ -1527,6 +1559,23 @@ ipcMain.handle('svn:fileContent', async (_e, repoPath: string, filePath: string)
   } catch {
     return '(no se pudo leer el contenido del archivo)'
   }
+})
+
+ipcMain.handle('svn:getLocalPreviewFile', async (_e, repoPath: string, filePath: string) => {
+  const { targetAbs } = resolveRepoRelativeTarget(repoPath, filePath)
+
+  if (!existsSync(targetAbs)) {
+    throw new Error('El archivo no existe localmente')
+  }
+  if (!statSync(targetAbs).isFile()) {
+    throw new Error('Solo se pueden previsualizar archivos')
+  }
+
+  return buildPreviewFileResponse(targetAbs)
+})
+
+ipcMain.handle('svn:getRemotePreviewFile', async (_e, url: string, defaultName?: string) => {
+  return exportRemotePreviewFile(url, defaultName)
 })
 
 ipcMain.handle('svn:getConflictContent', async (_e, repoPath: string, filePath: string) => {

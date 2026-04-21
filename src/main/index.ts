@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, safeStorage } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } from 'electron'
+import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
 import { setupAppUpdater } from './updater'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { createRequire } from 'module'
@@ -492,9 +493,16 @@ function openRepoInEditor(editorId: SupportedEditorId, repoPath: string): void {
 }
 
 // ─── Main Window ─────────────────────────────────────────────────────────────
-let mainWindow: BrowserWindow
+function sendToWindow(window: BrowserWindow | null, channel: string, payload: string): void {
+  if (!window || window.isDestroyed()) return
+  window.webContents.send(channel, payload)
+}
 
-function createWindow(): void {
+function getEventWindow(event: IpcMainInvokeEvent): BrowserWindow | null {
+  return BrowserWindow.fromWebContents(event.sender)
+}
+
+function createWindow(sourceWindow?: BrowserWindow | null): BrowserWindow {
   const preloadCandidates = [
     join(__dirname, '../preload/index.mjs'),
     join(__dirname, '../preload/index.js')
@@ -510,7 +518,7 @@ function createWindow(): void {
     ? windowsIconCandidates.find((p) => existsSync(p))
     : undefined
 
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1280,
     height: 800,
     minWidth: 900,
@@ -525,21 +533,90 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-    setupAppUpdater(mainWindow)
+  const shouldMaximize = Boolean(sourceWindow && !sourceWindow.isDestroyed() && sourceWindow.isMaximized())
+  if (sourceWindow && !sourceWindow.isDestroyed() && !shouldMaximize) {
+    const [x, y] = sourceWindow.getPosition()
+    const [width, height] = sourceWindow.getSize()
+    window.setBounds({
+      x: x + 28,
+      y: y + 28,
+      width,
+      height
+    })
+  }
+
+  window.on('ready-to-show', () => {
+    if (shouldMaximize) window.maximize()
+    window.show()
+    setupAppUpdater(window)
   })
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
+  window.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    window.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    window.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  return window
+}
+
+function openNewWindow(sourceWindow?: BrowserWindow | null): BrowserWindow {
+  const referenceWindow = sourceWindow && !sourceWindow.isDestroyed()
+    ? sourceWindow
+    : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null
+  return createWindow(referenceWindow)
+}
+
+function buildDockMenu(): Menu {
+  return Menu.buildFromTemplate([
+    {
+      label: 'Nueva ventana',
+      click: () => {
+        openNewWindow()
+      }
+    }
+  ])
+}
+
+function setupDockMenu(): void {
+  if (process.platform !== 'darwin' || !app.dock) return
+  app.dock.setMenu(buildDockMenu())
+}
+
+function setupApplicationMenu(): void {
+  const fileSubmenu: MenuItemConstructorOptions[] = [
+    {
+      label: 'Nueva ventana',
+      accelerator: 'CmdOrCtrl+N',
+      click: () => {
+        openNewWindow()
+      }
+    },
+    { type: 'separator' },
+    process.platform === 'darwin'
+      ? { role: 'close', label: 'Cerrar ventana' }
+      : { role: 'quit', label: 'Salir' }
+  ]
+
+  const template: MenuItemConstructorOptions[] = [
+    ...(process.platform === 'darwin'
+      ? [{ role: 'appMenu' as const }]
+      : []),
+    {
+      label: 'Archivo',
+      submenu: fileSubmenu
+    },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' }
+  ]
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
 app.whenReady().then(() => {
@@ -551,8 +628,9 @@ app.whenReady().then(() => {
     if (existsSync(iconPath)) app.dock.setIcon(iconPath)
   }
 
+  setupApplicationMenu()
+  setupDockMenu()
   createWindow()
-  setupAppUpdater(mainWindow)
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -560,6 +638,11 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+ipcMain.handle('app:newWindow', async (event) => {
+  openNewWindow(getEventWindow(event))
+  return true
 })
 
 // ─── SVN Helper ──────────────────────────────────────────────────────────────
@@ -1246,7 +1329,8 @@ ipcMain.handle('svn:remoteCreateFile', async (_e, parentUrl: string, name: strin
 })
 
 // ─── IPC: SVN Checkout ───────────────────────────────────────────────────────
-ipcMain.handle('svn:checkout', async (_e, url: string, targetName: string) => {
+ipcMain.handle('svn:checkout', async (event, url: string, targetName: string) => {
+  const targetWindow = getEventWindow(event)
   const safeTargetName = sanitizeLocalRepoName(targetName)
   const targetPath = join(BASE_REPO_PATH, safeTargetName)
 
@@ -1259,8 +1343,8 @@ ipcMain.handle('svn:checkout', async (_e, url: string, targetName: string) => {
       ['checkout', url, targetPath],
       {
         timeoutMs: 10 * 60 * 1000,
-        onData: (chunk) => mainWindow.webContents.send('svn:checkout-progress', chunk),
-        onErrorData: (chunk) => mainWindow.webContents.send('svn:checkout-progress', chunk)
+        onData: (chunk) => sendToWindow(targetWindow, 'svn:checkout-progress', chunk),
+        onErrorData: (chunk) => sendToWindow(targetWindow, 'svn:checkout-progress', chunk)
       }
     )
     invalidateLocalRepoUrlIndexCache()
@@ -1272,7 +1356,8 @@ ipcMain.handle('svn:checkout', async (_e, url: string, targetName: string) => {
 })
 
 // ─── IPC: SVN Export ─────────────────────────────────────────────────────────
-ipcMain.handle('svn:export', async (_e, url: string, targetPath: string) => {
+ipcMain.handle('svn:export', async (event, url: string, targetPath: string) => {
+  const targetWindow = getEventWindow(event)
   if (existsSync(targetPath)) {
     throw new Error(`Ya existe una carpeta en "${targetPath}"`)
   }
@@ -1281,8 +1366,8 @@ ipcMain.handle('svn:export', async (_e, url: string, targetPath: string) => {
       ['export', url, targetPath],
       {
         timeoutMs: 10 * 60 * 1000,
-        onData: (chunk) => mainWindow.webContents.send('svn:export-progress', chunk),
-        onErrorData: (chunk) => mainWindow.webContents.send('svn:export-progress', chunk)
+        onData: (chunk) => sendToWindow(targetWindow, 'svn:export-progress', chunk),
+        onErrorData: (chunk) => sendToWindow(targetWindow, 'svn:export-progress', chunk)
       }
     )
     return { success: true, path: targetPath }
@@ -1332,17 +1417,18 @@ function filterSslNoise(chunk: string): string {
     .replace(/\n{3,}/g, '\n\n')
 }
 
-ipcMain.handle('svn:update', async (_e, repoPath: string) => {
+ipcMain.handle('svn:update', async (event, repoPath: string) => {
+  const targetWindow = getEventWindow(event)
   try {
     const { stdout, stderr } = await runSvn(
       ['update'],
       {
         cwd: repoPath,
         timeoutMs: 10 * 60 * 1000,
-        onData: (chunk) => mainWindow.webContents.send('svn:update-progress', chunk),
+        onData: (chunk) => sendToWindow(targetWindow, 'svn:update-progress', chunk),
         onErrorData: (chunk) => {
           const filtered = filterSslNoise(chunk)
-          if (filtered.trim()) mainWindow.webContents.send('svn:update-progress', filtered)
+          if (filtered.trim()) sendToWindow(targetWindow, 'svn:update-progress', filtered)
         }
       }
     )
@@ -1861,7 +1947,8 @@ ipcMain.handle('svn:version', async () => {
 })
 
 // ─── IPC: Install SVN via Homebrew (fallback) ────────────────────────────────
-ipcMain.handle('svn:install', async () => {
+ipcMain.handle('svn:install', async (event) => {
+  const targetWindow = getEventWindow(event)
   if (process.platform === 'win32') {
     throw new Error('En Windows, JaviSVN incluye SVN integrado. Si hay problemas, descarga TortoiseSVN desde https://tortoisesvn.net')
   }
@@ -1882,10 +1969,10 @@ ipcMain.handle('svn:install', async () => {
     })
 
     proc.stdout.on('data', (d: Buffer) => {
-      mainWindow.webContents.send('svn:install-progress', d.toString())
+      sendToWindow(targetWindow, 'svn:install-progress', d.toString())
     })
     proc.stderr.on('data', (d: Buffer) => {
-      mainWindow.webContents.send('svn:install-progress', d.toString())
+      sendToWindow(targetWindow, 'svn:install-progress', d.toString())
     })
     proc.on('close', (code) => {
       if (code === 0) {

@@ -71,6 +71,7 @@ const svnAPI = {
   listEditors: () => ipcRenderer.invoke('dialog:listEditors'),
   openInEditor: (editorId: string, repoPath: string) =>
     ipcRenderer.invoke('dialog:openInEditor', editorId, repoPath),
+  newWindow: () => ipcRenderer.invoke('app:newWindow'),
 
   // Install SVN via Homebrew (fallback when no bundled binary)
   installSvn: () => ipcRenderer.invoke('svn:install'),

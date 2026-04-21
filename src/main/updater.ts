@@ -43,7 +43,6 @@ interface GithubRelease {
   assets?: GithubReleaseAsset[]
 }
 
-let windowRef: BrowserWindow | null = null
 let updaterInitialized = false
 let checkInFlight: Promise<void> | null = null
 
@@ -74,9 +73,21 @@ function formatError(err: unknown): string {
   return String(err || 'Error desconocido al verificar actualizaciones')
 }
 
-function emitState(): void {
-  if (!windowRef || windowRef.isDestroyed()) return
-  windowRef.webContents.send('appUpdate:state', { ...updateState })
+function getOpenWindows(): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed())
+}
+
+function emitState(targetWindow?: BrowserWindow): void {
+  const payload = { ...updateState }
+
+  if (targetWindow) {
+    if (!targetWindow.isDestroyed()) targetWindow.webContents.send('appUpdate:state', payload)
+    return
+  }
+
+  for (const window of getOpenWindows()) {
+    window.webContents.send('appUpdate:state', payload)
+  }
 }
 
 function patchState(patch: Partial<AppUpdateState>): void {
@@ -266,7 +277,8 @@ async function downloadUpdate(): Promise<AppUpdateState> {
   const url = updateState.downloadUrl || RELEASES_PAGE
   await shell.openExternal(url)
 
-  const { response } = await dialog.showMessageBox({
+  const ownerWindow = BrowserWindow.getFocusedWindow() || getOpenWindows()[0]
+  const { response } = await dialog.showMessageBox(ownerWindow ?? undefined, {
     type: 'info',
     title: 'Instalar actualización',
     message: `JaviSVN ${updateState.latestVersion} está descargándose`,
@@ -295,10 +307,8 @@ function registerIpc(): void {
 }
 
 export function setupAppUpdater(window: BrowserWindow): void {
-  windowRef = window
-
   if (updaterInitialized) {
-    emitState()
+    emitState(window)
     return
   }
   updaterInitialized = true

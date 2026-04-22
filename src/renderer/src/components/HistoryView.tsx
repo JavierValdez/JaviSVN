@@ -6,6 +6,7 @@ import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
 interface Props {
   repo: LocalRepo
   toast: (msg: string, type?: 'success' | 'error' | 'info') => void
+  onWorkingCopyChanged?: () => void | Promise<void>
 }
 
 const LOG_PAGE_SIZE = 100
@@ -57,7 +58,7 @@ interface FileDiffState {
   loading: boolean
 }
 
-export default function HistoryView({ repo, toast }: Props) {
+export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props) {
   const [log, setLog] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -66,6 +67,7 @@ export default function HistoryView({ repo, toast }: Props) {
   const [fileDiff, setFileDiff] = useState<FileDiffState | null>(null)
   const [repoInfo, setRepoInfo] = useState<{ url: string; rootUrl: string } | null>(null)
   const [pdfPreview, setPdfPreview] = useState<PdfPreviewState | null>(null)
+  const [restoringKey, setRestoringKey] = useState<string | null>(null)
 
   useEffect(() => {
     setFileDiff(null)
@@ -177,6 +179,37 @@ export default function HistoryView({ repo, toast }: Props) {
         loading: false,
         error: err.message || 'No se pudo abrir el PDF'
       } : prev)
+    }
+  }
+
+  const restorePathToWorkingCopy = async (entry: LogEntry, path: LogEntry['paths'][number]) => {
+    const itemLabel = path.path.split('/').filter(Boolean).pop() || path.path
+    const sourceRevision = path.action === 'D' ? entry.revision - 1 : entry.revision
+    if (sourceRevision < 1) {
+      toast('No existe una revisión anterior disponible para restaurar este elemento', 'error')
+      return
+    }
+
+    const prompt = path.action === 'D'
+      ? `¿Restaurar "${itemLabel}" desde r${sourceRevision} a tu copia local?\n\nEsto sobrescribirá el contenido actual en esa ruta.`
+      : `¿Traer "${itemLabel}" desde r${sourceRevision} a tu copia local?\n\nEsto sobrescribirá el contenido actual en esa ruta.`
+    if (!confirm(prompt)) return
+
+    const key = `${entry.revision}:${path.path}:${path.action}`
+    setRestoringKey(key)
+    try {
+      const result = await window.svn.restorePathAtRevision(repo.path, entry.revision, path.path, path.action)
+      toast(
+        result.kind === 'dir'
+          ? `Carpeta restaurada desde r${result.restoredRevision}`
+          : `Archivo restaurado desde r${result.restoredRevision}`,
+        'success'
+      )
+      await onWorkingCopyChanged?.()
+    } catch (err: any) {
+      toast(err.message || 'No se pudo restaurar el elemento a la copia local', 'error')
+    } finally {
+      setRestoringKey(null)
     }
   }
 
@@ -317,6 +350,10 @@ export default function HistoryView({ repo, toast }: Props) {
                     const { dir, file } = splitPath(p.path)
                     const canDiff = p.action !== 'D'
                     const opensPdf = canDiff && isPdfFile(p.path)
+                    const restoreKey = `${selected.revision}:${p.path}:${p.action}`
+                    const isRestoring = restoringKey === restoreKey
+                    const restoreRevision = p.action === 'D' ? selected.revision - 1 : selected.revision
+                    const canRestore = restoreRevision >= 1
                     return (
                       <div
                         key={i}
@@ -329,6 +366,22 @@ export default function HistoryView({ repo, toast }: Props) {
                           <span className="history-path-file">{file}</span>
                           {dir && <span className="history-path-dir">{dir}</span>}
                         </div>
+                        <button
+                          className="btn btn-ghost"
+                          style={{ padding: '0 5px', fontSize: 10, opacity: 0.72, flexShrink: 0 }}
+                          title={canRestore
+                            ? (p.action === 'D'
+                              ? `Restaurar a copia local desde r${restoreRevision}`
+                              : `Traer esta versión a la copia local (r${restoreRevision})`)
+                            : 'No existe una revisión anterior disponible para restaurar este elemento'}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void restorePathToWorkingCopy(selected, p)
+                          }}
+                          disabled={isRestoring || !canRestore}
+                        >
+                          {isRestoring ? '⟳' : '↩'}
+                        </button>
                         {repoInfo && (
                           <button
                             className="btn btn-ghost"

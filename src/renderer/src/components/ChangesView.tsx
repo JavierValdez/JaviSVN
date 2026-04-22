@@ -79,6 +79,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   const [changeMenu, setChangeMenu] = useState<ChangeMenuState | null>(null)
   const [actionPath, setActionPath] = useState<string | null>(null)
   const changeMenuRef = useRef<HTMLDivElement | null>(null)
+  const didSeedChecksRef = useRef(false)
 
   const changesSignature = changes
     .map((c) => `${c.status}:${c.path}`)
@@ -89,20 +90,59 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     ? changes.find((c) => c.path === selectedFile) || null
     : null
 
-  // Reset selection when repo or changes change
+  // Reset view when switching repositories.
   useEffect(() => {
-    const initial = new Set<string>()
-    changes.forEach((c) => {
-      if (c.status !== '?') initial.add(c.path)
-    })
-    setChecked(initial)
+    didSeedChecksRef.current = false
+    setChecked(new Set())
     setSelectedFile(null)
     setDiff('')
     setBlameFile(null)
     setConflictFile(null)
     setPdfPreview(null)
     setChangeMenu(null)
-  }, [repo.path, changesSignature])
+  }, [repo.path])
+
+  // Preserve the current working state when the change list refreshes.
+  useEffect(() => {
+    const currentPaths = new Set(changes.map((change) => change.path))
+
+    setChecked((prev) => {
+      if (!didSeedChecksRef.current && changes.length > 0) {
+        didSeedChecksRef.current = true
+        const initial = new Set<string>()
+        changes.forEach((change) => {
+          if (change.status !== '?') initial.add(change.path)
+        })
+        return initial
+      }
+
+      if (prev.size === 0) return prev
+      const next = new Set<string>()
+      prev.forEach((path) => {
+        if (currentPaths.has(path)) next.add(path)
+      })
+      return next.size === prev.size ? prev : next
+    })
+
+    if (selectedFile && !currentPaths.has(selectedFile)) {
+      setSelectedFile(null)
+      setDiff('')
+      setDiffLoading(false)
+      setPdfPreview(null)
+    }
+
+    if (blameFile && !currentPaths.has(blameFile)) {
+      setBlameFile(null)
+    }
+
+    if (conflictFile && !currentPaths.has(conflictFile)) {
+      setConflictFile(null)
+    }
+
+    if (changeMenu && !currentPaths.has(changeMenu.change.path)) {
+      setChangeMenu(null)
+    }
+  }, [changesSignature, selectedFile, blameFile, conflictFile, changeMenu])
 
   useEffect(() => {
     if (!changeMenu) return
@@ -430,6 +470,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
 
   const canShowBlame = selectedChange ? !['?', 'A', 'D', '!', 'C'].includes(selectedChange.status) : false
   const canPreviewPdf = Boolean(selectedChange && isPdfFile(selectedChange.path) && !['D', '!'].includes(selectedChange.status))
+  const showInitialLoading = loading && changes.length === 0
 
   return (
     <>
@@ -469,7 +510,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
           </div>
         </div>
 
-        {loading ? (
+        {showInitialLoading ? (
           <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
             <div className="spinner" />
           </div>

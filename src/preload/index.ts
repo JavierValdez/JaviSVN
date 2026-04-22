@@ -59,6 +59,8 @@ const svnAPI = {
     ipcRenderer.invoke('svn:getConflictContent', repoPath, filePath),
   revisionFileDiff: (repoPath: string, revision: number, svnPath: string) =>
     ipcRenderer.invoke('svn:revisionFileDiff', repoPath, revision, svnPath),
+  restorePathAtRevision: (repoPath: string, revision: number, svnPath: string, action: 'A' | 'M' | 'D' | 'R') =>
+    ipcRenderer.invoke('svn:restorePathAtRevision', repoPath, revision, svnPath, action),
   blame: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:blame', repoPath, filePath),
   commit: (repoPath: string, files: string[], message: string) =>
     ipcRenderer.invoke('svn:commit', repoPath, files, message),

@@ -66,6 +66,7 @@ declare global {
       ignore: (repoPath: string, filePath: string, scope?: 'item' | 'branch') => Promise<{ success: boolean; scope: 'item' | 'branch'; ignoredName: string; propertyTarget: string; alreadyPresent: boolean }>
       getConflictContent: (repoPath: string, filePath: string) => Promise<ConflictContent>
       revisionFileDiff: (repoPath: string, revision: number, svnPath: string) => Promise<string>
+      restorePathAtRevision: (repoPath: string, revision: number, svnPath: string, action: 'A' | 'M' | 'D' | 'R') => Promise<{ success: boolean; path: string; kind: 'file' | 'dir'; restoredRevision: number }>
       blame: (repoPath: string, filePath: string) => Promise<BlameLine[]>
       commit: (repoPath: string, files: string[], message: string) => Promise<any>
       revert: (repoPath: string, files: string[]) => Promise<any>
@@ -101,6 +102,13 @@ declare global {
 interface Toast { id: number; message: string; type: 'success' | 'error' | 'info' }
 const DEFAULT_SERVER_URL = ''
 
+function buildChangesSignature(changes: FileChange[]): string {
+  return changes
+    .map((change) => `${change.status}:${change.kind}:${change.path}`)
+    .sort()
+    .join('\n')
+}
+
 export default function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(null)
   const [showAuthDialog, setShowAuthDialog] = useState(false)
@@ -129,6 +137,12 @@ export default function App() {
   const [renameRemoteUrl, setRenameRemoteUrl] = useState('')
   const [availableEditors, setAvailableEditors] = useState<EditorOption[]>([])
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
+  const selectedRepoPathRef = useRef<string | null>(null)
+  const changesSignatureRef = useRef('')
+  const loadChangesRequestIdRef = useRef(0)
+
+  selectedRepoPathRef.current = selectedRepo?.path || null
+  changesSignatureRef.current = buildChangesSignature(changes)
 
   const toast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now()
@@ -183,31 +197,47 @@ export default function App() {
     return () => { unsubUpdate?.() }
   }, [toast])
 
-  // Load changes when repo changes
-  useEffect(() => {
-    if (!selectedRepo) return
-    loadChanges()
-  }, [selectedRepo])
+  const loadChanges = async (options: { silent?: boolean } = {}) => {
+    const repoPath = selectedRepoPathRef.current
+    if (!repoPath) return
 
-  const loadChanges = async () => {
-    if (!selectedRepo) return
-    setLoadingChanges(true)
+    const requestId = ++loadChangesRequestIdRef.current
+    if (!options.silent) setLoadingChanges(true)
+
     try {
-      const ch = await window.svn.status(selectedRepo.path)
-      setChanges(ch)
+      const nextChanges = await window.svn.status(repoPath)
+      if (loadChangesRequestIdRef.current !== requestId) return
+      if (selectedRepoPathRef.current !== repoPath) return
+
+      const nextSignature = buildChangesSignature(nextChanges)
+      if (options.silent && nextSignature === changesSignatureRef.current) return
+
+      setChanges(nextChanges)
     } catch (err: any) {
       console.error(err)
     } finally {
-      setLoadingChanges(false)
+      if (!options.silent && loadChangesRequestIdRef.current === requestId) {
+        setLoadingChanges(false)
+      }
     }
   }
 
-  // Auto-refresh changes every 15 s while on the changes tab
+  // Load changes when repo changes
+  useEffect(() => {
+    if (!selectedRepo) return
+    setChanges([])
+    void loadChanges()
+  }, [selectedRepo?.path])
+
+  // Poll changes in the background every 15 s while on the changes tab.
+  // This avoids resetting the panel with a visible loading state.
   const loadChangesRef = useRef(loadChanges)
   loadChangesRef.current = loadChanges
   useEffect(() => {
     if (!selectedRepo || activeTab !== 'changes') return
-    const id = setInterval(() => loadChangesRef.current(), 15_000)
+    const id = setInterval(() => {
+      void loadChangesRef.current({ silent: true })
+    }, 15_000)
     return () => clearInterval(id)
   }, [selectedRepo?.path, activeTab])
 
@@ -239,7 +269,7 @@ export default function App() {
     try {
       await window.svn.update(selectedRepo.path)
       toast('Repositorio actualizado correctamente', 'success')
-      await loadChanges()
+      await loadChanges({ silent: true })
       await refreshRepos()
     } catch (err: any) {
       toast(err.message || 'Error al actualizar', 'error')
@@ -251,6 +281,8 @@ export default function App() {
   }
 
   const handleSelectRepo = (repo: LocalRepo) => {
+    setChanges([])
+    setLoadingChanges(true)
     setSelectedRepo(repo)
     setActiveTab('changes')
   }
@@ -576,7 +608,14 @@ export default function App() {
               )}
               {activeTab === 'history' && (
                 <div key="history" className="tab-content">
-                  <HistoryView repo={selectedRepo} toast={toast} />
+                  <HistoryView
+                    repo={selectedRepo}
+                    toast={toast}
+                    onWorkingCopyChanged={async () => {
+                      await loadChanges({ silent: true })
+                      await refreshRepos()
+                    }}
+                  />
                 </div>
               )}
             </>

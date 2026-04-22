@@ -259,6 +259,48 @@ function splitRelativeSegments(relPath: string): string[] {
   return normalizeRelativePath(relPath).split('/').filter(Boolean)
 }
 
+function normalizeSvnRepoPath(input: string): string {
+  const normalized = String(input || '')
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/\/+$/g, '')
+  if (!normalized || normalized === '.') return ''
+  return normalized.startsWith('/') ? normalized : `/${normalized}`
+}
+
+function getRepoPathFromSvnUrl(url: string): string {
+  const safeUrl = String(url || '').trim()
+  if (!safeUrl) return ''
+
+  try {
+    return normalizeSvnRepoPath(decodeURIComponent(new URL(safeUrl).pathname))
+  } catch {
+    return normalizeSvnRepoPath(safeUrl)
+  }
+}
+
+function getWorkingCopyScopePath(info: { url: string; rootUrl: string }): string {
+  const urlPath = getRepoPathFromSvnUrl(info.url)
+  const rootPath = getRepoPathFromSvnUrl(info.rootUrl)
+
+  if (!urlPath || !rootPath) return ''
+  if (urlPath === rootPath) return ''
+  if (!urlPath.startsWith(`${rootPath}/`)) return ''
+  return normalizeSvnRepoPath(urlPath.slice(rootPath.length))
+}
+
+function mapRepoPathToWorkingCopyRelativePath(repoScopedPath: string, workingCopyScope: string): string | null {
+  const normalizedRepoPath = normalizeSvnRepoPath(repoScopedPath)
+  const normalizedScope = normalizeSvnRepoPath(workingCopyScope)
+
+  if (!normalizedRepoPath) return null
+  if (!normalizedScope) return normalizeRelativePath(normalizedRepoPath)
+  if (normalizedRepoPath === normalizedScope) return ''
+  if (!normalizedRepoPath.startsWith(`${normalizedScope}/`)) return null
+
+  return normalizeRelativePath(normalizedRepoPath.slice(normalizedScope.length))
+}
+
 async function isVersionedWorkingCopyPath(repoPath: string, relPath: string): Promise<boolean> {
   try {
     await runSvn(['info', '--xml', toRepoRelativeArg(relPath)], {
@@ -1959,6 +2001,75 @@ ipcMain.handle('svn:revisionFileDiff', async (_e, repoPath: string, revision: nu
       return `(archivo añadido en r${revision})`
     }
     throw err
+  }
+})
+
+ipcMain.handle('svn:restorePathAtRevision', async (
+  _e,
+  repoPath: string,
+  revision: number,
+  svnPath: string,
+  action: 'A' | 'M' | 'D' | 'R' = 'M'
+) => {
+  const safeAction = String(action || 'M').trim().toUpperCase()
+  if (!['A', 'M', 'D', 'R'].includes(safeAction)) {
+    throw new Error('Acción de historial no soportada')
+  }
+
+  const targetRevision = safeAction === 'D' ? Number(revision) - 1 : Number(revision)
+  if (!Number.isFinite(targetRevision) || targetRevision < 1) {
+    throw new Error('No existe una revisión anterior disponible para restaurar este elemento')
+  }
+
+  const { stdout: infoXml } = await runSvn(['info', '--xml'], { cwd: repoPath })
+  const parsedInfo = await xml2js.parseStringPromise(infoXml, { explicitArray: false })
+  const entry = parsedInfo?.info?.entry
+  const rootUrl: string = entry?.repository?.root || ''
+  const wcUrl: string = entry?.url || ''
+  if (!rootUrl || !wcUrl) {
+    throw new Error('No se pudo obtener la ubicación SVN de la copia local')
+  }
+
+  const workingCopyScope = getWorkingCopyScopePath({ url: wcUrl, rootUrl })
+  const repoScopedPath = normalizeSvnRepoPath(svnPath)
+  const relativeTargetPath = mapRepoPathToWorkingCopyRelativePath(repoScopedPath, workingCopyScope)
+  if (relativeTargetPath === null) {
+    throw new Error('Ese elemento está fuera del alcance de esta copia local')
+  }
+  if (!relativeTargetPath) {
+    throw new Error('No se puede restaurar la raíz completa de la copia local desde esta vista')
+  }
+
+  const restoreUrl = `${rootUrl}${repoScopedPath}@${targetRevision}`
+  const { stdout: remoteInfoXml } = await runSvn(['info', '--xml', restoreUrl], { timeoutMs: 15000 })
+  const parsedRemoteInfo = await xml2js.parseStringPromise(remoteInfoXml, { explicitArray: false })
+  const remoteEntry = parsedRemoteInfo?.info?.entry
+  const remoteKind = String(remoteEntry?.$?.kind || '').trim() === 'dir' ? 'dir' : 'file'
+
+  const { targetAbs } = resolveRepoRelativeTarget(repoPath, relativeTargetPath)
+  const parentDir = dirname(targetAbs)
+  mkdirSync(parentDir, { recursive: true })
+
+  if (existsSync(targetAbs)) {
+    const stat = statSync(targetAbs)
+    if (remoteKind === 'dir' && !stat.isDirectory()) {
+      throw new Error('La ruta local actual es un archivo y no puede restaurarse como carpeta')
+    }
+    if (remoteKind === 'file' && stat.isDirectory()) {
+      throw new Error('La ruta local actual es una carpeta y no puede restaurarse como archivo')
+    }
+  }
+
+  await runSvn(['export', '--force', restoreUrl, targetAbs], {
+    cwd: repoPath,
+    timeoutMs: 5 * 60 * 1000
+  })
+
+  return {
+    success: true,
+    path: relativeTargetPath,
+    kind: remoteKind,
+    restoredRevision: targetRevision
   }
 })
 

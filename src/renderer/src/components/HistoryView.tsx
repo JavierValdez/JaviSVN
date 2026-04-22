@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { LocalRepo, LogEntry } from '../types/svn'
 import DiffViewer from './DiffViewer'
 import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
+import { formatClipboardText } from '../utils/clipboard'
 
 interface Props {
   repo: LocalRepo
@@ -98,7 +99,7 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
   }
 
   const copy = (text: string, label: string) => {
-    navigator.clipboard.writeText(text)
+    navigator.clipboard.writeText(formatClipboardText(text))
     toast(label, 'success')
   }
 
@@ -314,7 +315,7 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
                     <button
                       className="btn btn-ghost"
                       style={{ padding: '1px 7px', fontSize: 11 }}
-                      title={`Copiar URL del repositorio remoto\n${repoInfo.url}`}
+                      title={`Copiar URL del repositorio remoto\n${formatClipboardText(repoInfo.url)}`}
                       onClick={() => copy(repoInfo.url, 'URL copiada')}
                     >
                       📋 URL
@@ -322,7 +323,7 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
                     <button
                       className="btn btn-ghost"
                       style={{ padding: '1px 7px', fontSize: 11 }}
-                      title={`Copiar URL@revisión\n${repoInfo.url}@${selected.revision}`}
+                      title={`Copiar URL@revisión\n${formatClipboardText(`${repoInfo.url}@${selected.revision}`)}`}
                       onClick={() => copy(`${repoInfo.url}@${selected.revision}`, 'URL@revisión copiada')}
                     >
                       📋 URL@rev
@@ -386,7 +387,7 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
                           <button
                             className="btn btn-ghost"
                             style={{ padding: '0 5px', fontSize: 10, opacity: 0.6, flexShrink: 0 }}
-                            title={`Copiar URL@revisión\n${repoInfo.rootUrl}${p.path}@${selected.revision}`}
+                            title={`Copiar URL@revisión\n${formatClipboardText(`${repoInfo.rootUrl}${p.path}@${selected.revision}`)}`}
                             onClick={(e) => {
                               e.stopPropagation()
                               copy(`${repoInfo.rootUrl}${p.path}@${selected.revision}`, 'URL@revisión copiada')

@@ -1302,11 +1302,14 @@ ipcMain.handle('svn:list', async (_e, url: string) => {
   const arr = Array.isArray(entries) ? entries : [entries]
   const normalizedBaseUrl = normalizeRepoUrl(url)
   const localRepoUrlIndex = await getLocalRepoUrlIndex()
+  const isDirectFileListing = arr.length === 1
+    && String(arr[0]?.$?.kind || '') === 'file'
+    && basename(normalizedBaseUrl) === String(arr[0]?.name?._?.trim() || arr[0]?.name || '').replace(/\/$/, '')
 
   return arr.map((e: any) => {
     const name = String(e.name?._?.trim() || e.name || '').replace(/\/$/, '')
     const isDir = e.$?.kind === 'dir'
-    const entryUrl = `${normalizedBaseUrl}/${name}`
+    const entryUrl = isDirectFileListing ? normalizedBaseUrl : `${normalizedBaseUrl}/${name}`
     const localPath = localRepoUrlIndex.get(normalizeRepoUrl(entryUrl))
     return {
       name,

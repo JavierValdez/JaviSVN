@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Credentials, LogEntry, RemoteEntry, RemoteSearchResult, RemoteServer } from '../types/svn'
 import DiffViewer from './DiffViewer'
 import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
+import { formatClipboardText } from '../utils/clipboard'
 
 interface Props {
   credentials: Credentials | null
@@ -118,6 +119,11 @@ function getSvnApi(): any {
 function normalizeError(err: any): string {
   const raw = String(err?.message || err || 'Error desconocido')
   return raw.replace(/^Error invoking remote method '[^']+': Error:\s*/i, '').trim()
+}
+
+function copyToClipboard(text: string, label: string, toast: Props['toast']): void {
+  navigator.clipboard.writeText(formatClipboardText(text))
+  toast(label, 'success')
 }
 
 function formatDate(dateStr: string): string {
@@ -1048,8 +1054,7 @@ export default function ExplorerView({
           className="tree-dropdown-item"
           onClick={() => {
             setEntryMenu(null)
-            navigator.clipboard.writeText(entry.url)
-            toast('URL copiada', 'success')
+            copyToClipboard(entry.url, 'URL copiada', toast)
           }}
         >
           📋 Copiar URL
@@ -1058,8 +1063,7 @@ export default function ExplorerView({
           className="tree-dropdown-item"
           onClick={() => {
             setEntryMenu(null)
-            navigator.clipboard.writeText(String(entry.revision))
-            toast('Revisión copiada', 'success')
+            copyToClipboard(String(entry.revision), 'Revisión copiada', toast)
           }}
         >
           📋 Copiar revisión (r{entry.revision})
@@ -1068,8 +1072,7 @@ export default function ExplorerView({
           className="tree-dropdown-item"
           onClick={() => {
             setEntryMenu(null)
-            navigator.clipboard.writeText(`${entry.url}@${entry.revision}`)
-            toast('URL@revisión copiada', 'success')
+            copyToClipboard(`${entry.url}@${entry.revision}`, 'URL@revisión copiada', toast)
           }}
         >
           📋 Copiar URL@revisión
@@ -1481,8 +1484,7 @@ export default function ExplorerView({
                           title="Copiar revisión"
                           onClick={(e) => {
                             e.stopPropagation()
-                            navigator.clipboard.writeText(String(entry.revision))
-                            toast('Revisión copiada', 'success')
+                            copyToClipboard(String(entry.revision), 'Revisión copiada', toast)
                           }}
                         >
                           📋
@@ -1507,8 +1509,7 @@ export default function ExplorerView({
                         style={{ padding: '1px 7px', fontSize: 11 }}
                         title="Copiar número de revisión"
                         onClick={() => {
-                          navigator.clipboard.writeText(String(remoteLog.selected!.revision))
-                          toast('Revisión copiada', 'success')
+                          copyToClipboard(String(remoteLog.selected!.revision), 'Revisión copiada', toast)
                         }}
                       >
                         📋 r{remoteLog.selected.revision}
@@ -1516,10 +1517,9 @@ export default function ExplorerView({
                       <button
                         className="btn btn-ghost"
                         style={{ padding: '1px 7px', fontSize: 11 }}
-                        title={`Copiar URL@revisión\n${remoteLog.url}@${remoteLog.selected.revision}`}
+                        title={`Copiar URL@revisión\n${formatClipboardText(`${remoteLog.url}@${remoteLog.selected.revision}`)}`}
                         onClick={() => {
-                          navigator.clipboard.writeText(`${remoteLog.url}@${remoteLog.selected!.revision}`)
-                          toast('URL@revisión copiada', 'success')
+                          copyToClipboard(`${remoteLog.url}@${remoteLog.selected!.revision}`, 'URL@revisión copiada', toast)
                         }}
                       >
                         📋 URL
@@ -1562,15 +1562,14 @@ export default function ExplorerView({
                                 className="btn btn-ghost"
                                 style={{ padding: '0 5px', fontSize: 10, opacity: 0.6, flexShrink: 0 }}
                                 title={remoteLog.repoRoot
-                                  ? `Copiar URL@revisión\n${remoteLog.repoRoot}${p.path}@${remoteLog.selected!.revision}`
-                                  : `Copiar ruta\n${p.path}`}
+                                  ? `Copiar URL@revisión\n${formatClipboardText(`${remoteLog.repoRoot}${p.path}@${remoteLog.selected!.revision}`)}`
+                                  : `Copiar ruta\n${formatClipboardText(p.path)}`}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   const text = remoteLog.repoRoot
                                     ? `${remoteLog.repoRoot}${p.path}@${remoteLog.selected!.revision}`
                                     : p.path
-                                  navigator.clipboard.writeText(text)
-                                  toast(remoteLog.repoRoot ? 'URL@revisión copiada' : 'Ruta copiada', 'success')
+                                  copyToClipboard(text, remoteLog.repoRoot ? 'URL@revisión copiada' : 'Ruta copiada', toast)
                                 }}
                               >
                                 📋

@@ -51,6 +51,10 @@ const svnAPI = {
   fileContent: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:fileContent', repoPath, filePath),
   getLocalPreviewFile: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:getLocalPreviewFile', repoPath, filePath),
   getRemotePreviewFile: (url: string, defaultName: string) => ipcRenderer.invoke('svn:getRemotePreviewFile', url, defaultName),
+  add: (repoPath: string, filePath: string, scope: 'item' | 'branch' = 'item') =>
+    ipcRenderer.invoke('svn:add', repoPath, filePath, scope),
+  ignore: (repoPath: string, filePath: string, scope: 'item' | 'branch' = 'item') =>
+    ipcRenderer.invoke('svn:ignore', repoPath, filePath, scope),
   getConflictContent: (repoPath: string, filePath: string) =>
     ipcRenderer.invoke('svn:getConflictContent', repoPath, filePath),
   revisionFileDiff: (repoPath: string, revision: number, svnPath: string) =>

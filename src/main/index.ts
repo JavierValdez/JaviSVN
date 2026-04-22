@@ -236,6 +236,136 @@ function resolveRepoRelativeTarget(repoPath: string, filePath: string): {
   return { repoAbs, targetAbs, relativePath }
 }
 
+function normalizeRelativePath(input: string): string {
+  return String(input || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\/+/, '')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+}
+
+function toRepoRelativeArg(relPath: string): string {
+  return normalizeRelativePath(relPath) || '.'
+}
+
+function getParentRelativePath(relPath: string): string {
+  const normalized = normalizeRelativePath(relPath)
+  if (!normalized) return ''
+  const parent = dirname(normalized).replace(/\\/g, '/')
+  return parent === '.' ? '' : normalizeRelativePath(parent)
+}
+
+function splitRelativeSegments(relPath: string): string[] {
+  return normalizeRelativePath(relPath).split('/').filter(Boolean)
+}
+
+async function isVersionedWorkingCopyPath(repoPath: string, relPath: string): Promise<boolean> {
+  try {
+    await runSvn(['info', '--xml', toRepoRelativeArg(relPath)], {
+      cwd: repoPath,
+      timeoutMs: 10000
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function findNearestVersionedDirectory(repoPath: string, startRelPath: string): Promise<string> {
+  let current = normalizeRelativePath(startRelPath)
+
+  while (true) {
+    if (await isVersionedWorkingCopyPath(repoPath, current)) {
+      return current
+    }
+
+    if (!current) {
+      break
+    }
+
+    current = getParentRelativePath(current)
+  }
+
+  throw new Error('No se encontró una carpeta versionada para aplicar la acción')
+}
+
+async function resolveUnversionedBranchTarget(repoPath: string, targetRelPath: string): Promise<{
+  versionedAncestorRelPath: string
+  branchRelPath: string
+  branchName: string
+}> {
+  const normalizedTarget = normalizeRelativePath(targetRelPath)
+  if (!normalizedTarget) {
+    throw new Error('No se puede aplicar la acción sobre la raíz del repositorio')
+  }
+
+  const versionedAncestorRelPath = await findNearestVersionedDirectory(
+    repoPath,
+    getParentRelativePath(normalizedTarget)
+  )
+  const targetSegments = splitRelativeSegments(normalizedTarget)
+  const ancestorSegments = splitRelativeSegments(versionedAncestorRelPath)
+  const branchName = targetSegments[ancestorSegments.length]
+
+  if (!branchName) {
+    throw new Error('No se pudo determinar la rama/carpeta a procesar')
+  }
+
+  const branchRelPath = normalizeRelativePath(
+    ancestorSegments.length > 0
+      ? `${ancestorSegments.join('/')}/${branchName}`
+      : branchName
+  )
+
+  return { versionedAncestorRelPath, branchRelPath, branchName }
+}
+
+async function readIgnorePatterns(repoPath: string, dirRelPath: string): Promise<string[]> {
+  try {
+    const { stdout } = await runSvn(['propget', 'svn:ignore', toRepoRelativeArg(dirRelPath)], {
+      cwd: repoPath,
+      timeoutMs: 10000
+    })
+
+    return stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+async function appendIgnorePattern(repoPath: string, dirRelPath: string, pattern: string): Promise<{
+  alreadyPresent: boolean
+  propertyTarget: string
+}> {
+  const nextPattern = String(pattern || '').trim()
+  if (!nextPattern) {
+    throw new Error('El patrón a ignorar es requerido')
+  }
+
+  const propertyTarget = normalizeRelativePath(dirRelPath)
+  const existingPatterns = await readIgnorePatterns(repoPath, propertyTarget)
+  if (existingPatterns.includes(nextPattern)) {
+    return {
+      alreadyPresent: true,
+      propertyTarget: propertyTarget || '.'
+    }
+  }
+
+  const updatedValue = [...existingPatterns, nextPattern].join('\n')
+  await runSvn(['propset', 'svn:ignore', updatedValue, toRepoRelativeArg(propertyTarget)], {
+    cwd: repoPath,
+    timeoutMs: 10000
+  })
+
+  return {
+    alreadyPresent: false,
+    propertyTarget: propertyTarget || '.'
+  }
+}
+
 function sanitizePreviewFileName(value: string, fallback = 'preview.bin'): string {
   const baseName = basename(String(value || '').trim()) || fallback
   const sanitized = baseName.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim()
@@ -1513,6 +1643,15 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
   const target = parsed.status?.target
   if (!target?.entry) return []
 
+  const detectEntryKind = (relPath: string): 'file' | 'dir' => {
+    try {
+      const abs = resolve(repoPath, relPath)
+      return existsSync(abs) && statSync(abs).isDirectory() ? 'dir' : 'file'
+    } catch {
+      return 'file'
+    }
+  }
+
   const entries = Array.isArray(target.entry) ? target.entry : [target.entry]
   const baseChanges = entries.map((e: any) => {
     const item = e['wc-status']?.$?.item || '?'
@@ -1521,37 +1660,46 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
       path,
       displayPath: path,
       status: mapStatus(item),
-      checked: item !== '?'
+      checked: item !== '?',
+      kind: detectEntryKind(path)
     }
   })
 
-  const expandedFromUnversionedDirs: Array<{ path: string; displayPath: string; status: string; checked: boolean }> = []
+  const expandedFromUnversionedDirs: Array<{
+    path: string
+    displayPath: string
+    status: string
+    checked: boolean
+    kind: 'file' | 'dir'
+  }> = []
 
   const walkUnversionedDir = (absDir: string, relDir: string) => {
     try {
       for (const child of readdirSync(absDir, { withFileTypes: true })) {
-      if (child.name === '.svn') continue
+        if (child.name === '.svn') continue
 
-      const childAbs = join(absDir, child.name)
-      const childRel = join(relDir, child.name).replace(/\\/g, '/')
+        const childAbs = join(absDir, child.name)
+        const childRel = join(relDir, child.name).replace(/\\/g, '/')
 
-      if (child.isDirectory?.()) {
-        expandedFromUnversionedDirs.push({
-          path: childRel,
-          displayPath: childRel,
-          status: '?',
-          checked: false
-        })
-        walkUnversionedDir(childAbs, childRel)
-      } else {
-        expandedFromUnversionedDirs.push({
-          path: childRel,
-          displayPath: childRel,
-          status: '?',
-          checked: false
-        })
+        if (child.isDirectory?.()) {
+          expandedFromUnversionedDirs.push({
+            path: childRel,
+            displayPath: childRel,
+            status: '?',
+            checked: false,
+            kind: 'dir'
+          })
+          walkUnversionedDir(childAbs, childRel)
+        } else {
+          expandedFromUnversionedDirs.push({
+            path: childRel,
+            displayPath: childRel,
+            status: '?',
+            checked: false,
+            kind: 'file'
+          })
+        }
       }
-    }
     } catch {
       return
     }
@@ -1571,7 +1719,13 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
     }
   }
 
-  const merged = new Map<string, { path: string; displayPath: string; status: string; checked: boolean }>()
+  const merged = new Map<string, {
+    path: string
+    displayPath: string
+    status: string
+    checked: boolean
+    kind: 'file' | 'dir'
+  }>()
   for (const c of baseChanges) merged.set(c.path, c)
   for (const c of expandedFromUnversionedDirs) {
     if (!merged.has(c.path)) merged.set(c.path, c)
@@ -1677,6 +1831,72 @@ ipcMain.handle('svn:diff', async (_e, repoPath: string, filePath: string) => {
       // ignore secondary error and fallback to generic message
     }
     return '(no se pudo obtener el diff)'
+  }
+})
+
+ipcMain.handle('svn:add', async (_e, repoPath: string, filePath: string, scope: 'item' | 'branch' = 'item') => {
+  const safeScope = scope === 'branch' ? 'branch' : 'item'
+  const { targetAbs, relativePath } = resolveRepoRelativeTarget(repoPath, filePath)
+  if (!existsSync(targetAbs)) {
+    throw new Error('El archivo o carpeta ya no existe')
+  }
+
+  const normalizedTarget = normalizeRelativePath(relativePath)
+  const targetToAdd = safeScope === 'branch'
+    ? (await resolveUnversionedBranchTarget(repoPath, normalizedTarget)).branchRelPath
+    : normalizedTarget
+
+  await runSvn(['add', '--force', '--parents', toRepoRelativeArg(targetToAdd)], {
+    cwd: repoPath,
+    timeoutMs: 60_000
+  })
+
+  return {
+    success: true,
+    scope: safeScope,
+    target: targetToAdd
+  }
+})
+
+ipcMain.handle('svn:ignore', async (_e, repoPath: string, filePath: string, scope: 'item' | 'branch' = 'item') => {
+  const safeScope = scope === 'branch' ? 'branch' : 'item'
+  const { targetAbs, relativePath } = resolveRepoRelativeTarget(repoPath, filePath)
+  if (!existsSync(targetAbs)) {
+    throw new Error('El archivo o carpeta ya no existe')
+  }
+
+  const normalizedTarget = normalizeRelativePath(relativePath)
+  if (!normalizedTarget) {
+    throw new Error('No se puede ignorar la raíz del repositorio')
+  }
+
+  let propertyDirRelPath = ''
+  let ignorePattern = ''
+
+  if (safeScope === 'branch') {
+    const branchTarget = await resolveUnversionedBranchTarget(repoPath, normalizedTarget)
+    propertyDirRelPath = branchTarget.versionedAncestorRelPath
+    ignorePattern = branchTarget.branchName
+  } else {
+    const directParentRelPath = getParentRelativePath(normalizedTarget)
+    const versionedParentRelPath = await findNearestVersionedDirectory(repoPath, directParentRelPath)
+
+    if (normalizeRelativePath(versionedParentRelPath) !== normalizeRelativePath(directParentRelPath)) {
+      throw new Error('Para ignorar solo este elemento, la carpeta padre debe estar versionada. Usa la opción de ignorar la rama completa.')
+    }
+
+    propertyDirRelPath = versionedParentRelPath
+    ignorePattern = basename(normalizedTarget)
+  }
+
+  const result = await appendIgnorePattern(repoPath, propertyDirRelPath, ignorePattern)
+
+  return {
+    success: true,
+    scope: safeScope,
+    ignoredName: ignorePattern,
+    propertyTarget: result.propertyTarget,
+    alreadyPresent: result.alreadyPresent
   }
 })
 

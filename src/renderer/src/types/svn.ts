@@ -33,6 +33,7 @@ export interface FileChange {
   status: 'M' | 'A' | 'D' | '?' | 'C' | '!' | 'R'
   checked: boolean
   displayPath: string
+  kind: 'file' | 'dir'
 }
 
 export interface BlameLine {

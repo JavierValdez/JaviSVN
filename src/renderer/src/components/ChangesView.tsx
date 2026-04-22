@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { FileChange, LocalRepo } from '../types/svn'
 import DiffViewer from './DiffViewer'
 import BlameView from './BlameView'
@@ -47,6 +48,23 @@ function isPdfFile(path: string): boolean {
   return /\.pdf$/i.test(path)
 }
 
+function normalizeError(err: unknown, fallback: string): string {
+  if (err instanceof Error && err.message.trim()) return err.message.trim()
+  return fallback
+}
+
+function buildLocalAbsolutePath(repoPath: string, filePath: string): string {
+  const separator = repoPath.includes('\\') ? '\\' : '/'
+  const base = repoPath.replace(/[\\/]+$/g, '')
+  return `${base}${separator}${filePath.replace(/\//g, separator)}`
+}
+
+interface ChangeMenuState {
+  change: FileChange
+  top: number
+  left: number
+}
+
 export default function ChangesView({ repo, changes, loading, onRefresh, toast }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set())
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -58,6 +76,9 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   const [blameFile, setBlameFile] = useState<string | null>(null)
   const [conflictFile, setConflictFile] = useState<string | null>(null)
   const [pdfPreview, setPdfPreview] = useState<PdfPreviewState | null>(null)
+  const [changeMenu, setChangeMenu] = useState<ChangeMenuState | null>(null)
+  const [actionPath, setActionPath] = useState<string | null>(null)
+  const changeMenuRef = useRef<HTMLDivElement | null>(null)
 
   const changesSignature = changes
     .map((c) => `${c.status}:${c.path}`)
@@ -80,7 +101,29 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     setBlameFile(null)
     setConflictFile(null)
     setPdfPreview(null)
+    setChangeMenu(null)
   }, [repo.path, changesSignature])
+
+  useEffect(() => {
+    if (!changeMenu) return
+
+    const onPointerDown = (event: MouseEvent) => {
+      if (changeMenuRef.current && !changeMenuRef.current.contains(event.target as Node)) {
+        setChangeMenu(null)
+      }
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setChangeMenu(null)
+    }
+
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [changeMenu])
 
   const openPdfPreview = async (filePath: string) => {
     setPdfPreview({
@@ -122,8 +165,12 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     try {
       let d = ''
       if (current?.status === '?') {
-        const content = await window.svn.fileContent(repo.path, filePath)
-        d = content || '(archivo vacío)'
+        if (current.kind === 'dir') {
+          d = '(carpeta sin versionar)'
+        } else {
+          const content = await window.svn.fileContent(repo.path, filePath)
+          d = content || '(archivo vacío)'
+        }
       } else {
         d = await window.svn.diff(repo.path, filePath)
       }
@@ -196,6 +243,186 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     }
   }
 
+  const openChangeMenuAtButton = (change: FileChange, button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect()
+    const menuWidth = 248
+    const menuHeight = 280
+    const margin = 12
+    const left = Math.max(margin, Math.min(window.innerWidth - menuWidth - margin, rect.right - menuWidth))
+    const top = rect.bottom + 6 + menuHeight > window.innerHeight - margin
+      ? Math.max(margin, rect.top - menuHeight - 6)
+      : rect.bottom + 6
+
+    setChangeMenu({ change, top, left })
+  }
+
+  const handleOpenChange = async (change: FileChange) => {
+    try {
+      if (change.kind === 'dir') {
+        await window.svn.openFolder(buildLocalAbsolutePath(repo.path, change.path))
+      } else {
+        await window.svn.openFile(repo.path, change.path)
+      }
+    } catch (err) {
+      toast(normalizeError(err, 'No se pudo abrir el elemento'), 'error')
+    }
+  }
+
+  const handleCopyPath = async (change: FileChange, mode: 'relative' | 'absolute') => {
+    const text = mode === 'absolute'
+      ? buildLocalAbsolutePath(repo.path, change.path)
+      : change.path
+
+    try {
+      await navigator.clipboard.writeText(text)
+      toast(mode === 'absolute' ? 'Ruta absoluta copiada' : 'Ruta relativa copiada', 'success')
+    } catch (err) {
+      toast(normalizeError(err, 'No se pudo copiar la ruta'), 'error')
+    }
+  }
+
+  const handleAdd = async (change: FileChange, scope: 'item' | 'branch') => {
+    setActionPath(change.path)
+    setChangeMenu(null)
+    try {
+      await window.svn.add(repo.path, change.path, scope)
+      toast(scope === 'branch' ? 'Rama agregada a SVN' : 'Elemento agregado a SVN', 'success')
+      await onRefresh()
+    } catch (err) {
+      toast(normalizeError(err, 'No se pudo agregar el elemento a SVN'), 'error')
+    } finally {
+      setActionPath(null)
+    }
+  }
+
+  const handleIgnore = async (change: FileChange, scope: 'item' | 'branch') => {
+    const prompt = scope === 'branch'
+      ? `¿Ignorar la rama/carpeta completa asociada a "${change.displayPath}"?`
+      : `¿Ignorar "${change.displayPath}" en SVN?`
+
+    if (!confirm(prompt)) return
+
+    setActionPath(change.path)
+    setChangeMenu(null)
+    try {
+      const result = await window.svn.ignore(repo.path, change.path, scope)
+      if (result.alreadyPresent) {
+        toast('La regla svn:ignore ya existía', 'info')
+      } else {
+        toast('Regla svn:ignore agregada. Recuerda hacer commit del directorio padre.', 'success')
+      }
+      await onRefresh()
+    } catch (err) {
+      toast(normalizeError(err, 'No se pudo agregar a svn:ignore'), 'error')
+    } finally {
+      setActionPath(null)
+    }
+  }
+
+  const renderChangeMenu = () => {
+    if (!changeMenu) return null
+
+    const { change, top, left } = changeMenu
+    const isUnversioned = change.status === '?'
+    const isNestedPath = change.path.includes('/')
+    const canOpen = !['D', '!'].includes(change.status)
+    const canRevertSingle = change.status !== '?'
+
+    return createPortal(
+      <div
+        className="tree-item-dropdown tree-item-dropdown-floating"
+        ref={changeMenuRef}
+        style={{ top, left, minWidth: 248 }}
+      >
+        {canOpen && (
+          <button
+            className="tree-dropdown-item"
+            onClick={() => {
+              setChangeMenu(null)
+              handleOpenChange(change)
+            }}
+          >
+            {change.kind === 'dir' ? '📂 Abrir carpeta' : '📄 Abrir archivo'}
+          </button>
+        )}
+        <button
+          className="tree-dropdown-item"
+          onClick={() => {
+            setChangeMenu(null)
+            handleCopyPath(change, 'relative')
+          }}
+        >
+          📋 Copiar ruta relativa
+        </button>
+        <button
+          className="tree-dropdown-item"
+          onClick={() => {
+            setChangeMenu(null)
+            handleCopyPath(change, 'absolute')
+          }}
+        >
+          📍 Copiar ruta absoluta
+        </button>
+
+        {isUnversioned && (
+          <>
+            <div className="tree-dropdown-divider" />
+            <button
+              className="tree-dropdown-item"
+              onClick={() => handleAdd(change, 'item')}
+              disabled={actionPath === change.path}
+            >
+              ➕ Agregar solo este elemento
+            </button>
+            {isNestedPath && (
+              <button
+                className="tree-dropdown-item"
+                onClick={() => handleAdd(change, 'branch')}
+                disabled={actionPath === change.path}
+              >
+                🌿 Agregar rama completa
+              </button>
+            )}
+            <button
+              className="tree-dropdown-item"
+              onClick={() => handleIgnore(change, 'item')}
+              disabled={actionPath === change.path}
+            >
+              🙈 Ignorar este elemento
+            </button>
+            {isNestedPath && (
+              <button
+                className="tree-dropdown-item"
+                onClick={() => handleIgnore(change, 'branch')}
+                disabled={actionPath === change.path}
+              >
+                🌲 Ignorar rama completa
+              </button>
+            )}
+          </>
+        )}
+
+        {canRevertSingle && (
+          <>
+            <div className="tree-dropdown-divider" />
+            <button
+              className="tree-dropdown-item"
+              style={{ color: 'var(--danger)' }}
+              onClick={() => {
+                setChangeMenu(null)
+                handleRevert(change.path)
+              }}
+              disabled={reverting}
+            >
+              ↺ Revertir este cambio
+            </button>
+          </>
+        )}
+      </div>,
+      document.body
+    )
+  }
+
   const sortedChanges = [...changes].sort((a, b) => {
     const order: Record<string, number> = { C: 0, M: 1, A: 2, R: 3, D: 4, '!': 5, '?': 6 }
     return (order[a.status] ?? 9) - (order[b.status] ?? 9)
@@ -254,25 +481,48 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
           </div>
         ) : (
           <div className="changes-list">
-            {sortedChanges.map((c) => (
-              <div
-                key={c.path}
-                className={`change-item ${selectedFile === c.path ? 'selected' : ''}`}
-                onClick={() => loadDiff(c.path)}
-                title={`${STATUS_LABEL[c.status] || c.status}: ${c.displayPath}`}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked.has(c.path)}
-                  onChange={() => toggleCheck(c.path)}
-                  onClick={(e) => e.stopPropagation()}
-                />
-                <span className={`change-status ${STATUS_CLASS[c.status] || ''}`}>
-                  {c.status}
-                </span>
-                <span className="change-path">{c.displayPath}</span>
-              </div>
-            ))}
+            {sortedChanges.map((c) => {
+              const isMenuOpen = changeMenu?.change.path === c.path
+              const isBusy = actionPath === c.path
+
+              return (
+                <div
+                  key={c.path}
+                  className={`change-item ${selectedFile === c.path ? 'selected' : ''} ${isMenuOpen ? 'menu-open' : ''}`}
+                  onClick={() => loadDiff(c.path)}
+                  title={`${STATUS_LABEL[c.status] || c.status}: ${c.displayPath}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked.has(c.path)}
+                    onChange={() => toggleCheck(c.path)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <span className={`change-status ${STATUS_CLASS[c.status] || ''}`}>
+                    {c.status}
+                  </span>
+                  <span className="change-path">{c.displayPath}</span>
+                  <div className="change-item-actions">
+                    <button
+                      className="change-menu-btn"
+                      title="Acciones"
+                      disabled={isBusy}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (isMenuOpen) {
+                          setChangeMenu(null)
+                          return
+                        }
+
+                        openChangeMenuAtButton(c, e.currentTarget)
+                      }}
+                    >
+                      ···
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
 
@@ -389,6 +639,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
         state={pdfPreview}
         onClose={() => setPdfPreview(null)}
       />
+      {renderChangeMenu()}
     </>
   )
 }

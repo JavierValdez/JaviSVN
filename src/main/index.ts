@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
 import { createRequire } from 'module'
 import { spawn, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
+import { rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'os'
 import { pathToFileURL } from 'node:url'
 
@@ -264,6 +265,29 @@ async function exportRemotePreviewFile(url: string, suggestedName?: string): Pro
   })
 
   return buildPreviewFileResponse(targetPath, safeName)
+}
+
+function isLocalRepoDeleteBusyError(error: unknown): boolean {
+  const code = typeof error === 'object' && error && 'code' in error
+    ? String((error as NodeJS.ErrnoException).code || '').toUpperCase()
+    : ''
+  return code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY' || code === 'EACCES'
+}
+
+function buildLocalRepoDeleteError(repoPath: string, error: unknown): Error {
+  const repoName = basename(repoPath) || 'la copia local'
+  if (isLocalRepoDeleteBusyError(error)) {
+    return new Error(
+      `No se pudo eliminar la copia local "${repoName}" porque está en uso. ` +
+      'Cierra Explorer, terminales o editores abiertos dentro de esa carpeta e inténtalo de nuevo.'
+    )
+  }
+
+  const message = error instanceof Error ? String(error.message || '').trim() : ''
+  if (message) {
+    return new Error(`No se pudo eliminar la copia local "${repoName}": ${message}`)
+  }
+  return new Error(`No se pudo eliminar la copia local "${repoName}".`)
 }
 
 function sanitizeLocalRepoName(targetName: string): string {
@@ -1073,12 +1097,23 @@ ipcMain.handle('repos:list', async () => {
 
 ipcMain.handle('repos:basePath', () => BASE_REPO_PATH)
 
-ipcMain.handle('repos:delete', (_e, repoPath: string) => {
+ipcMain.handle('repos:delete', async (_e, repoPath: string) => {
   if (!repoPath.startsWith(BASE_REPO_PATH)) {
     throw new Error('Ruta de repositorio fuera del directorio permitido')
   }
   if (!existsSync(repoPath)) throw new Error('El repositorio no existe')
-  rmSync(repoPath, { recursive: true, force: true })
+
+  try {
+    await rm(repoPath, {
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 250
+    })
+  } catch (error) {
+    throw buildLocalRepoDeleteError(repoPath, error)
+  }
+
   invalidateLocalRepoUrlIndexCache()
 })
 

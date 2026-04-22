@@ -166,7 +166,7 @@ export default function Sidebar({
                       onDeleteRepo(repo)
                     }}
                   >
-                    🗑 Eliminar repositorio
+                    🗑 Eliminar copia local
                   </button>
                 </div>
               )}

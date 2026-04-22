@@ -404,13 +404,22 @@ export default function App() {
 
   const confirmDeleteRepo = async () => {
     if (!repoToDelete) return
+    const targetRepo = repoToDelete
+    const wasSelected = selectedRepo?.path === targetRepo.path
+
+    if (wasSelected) {
+      setSelectedRepo(null)
+      setChanges([])
+      setLoadingChanges(false)
+    }
+
     try {
-      await window.svn.deleteRepo(repoToDelete.path)
-      if (selectedRepo?.path === repoToDelete.path) setSelectedRepo(null)
+      await window.svn.deleteRepo(targetRepo.path)
       await refreshRepos()
-      toast(`Repositorio "${repoToDelete.name}" eliminado`, 'success')
+      toast(`Copia local "${targetRepo.name}" eliminada`, 'success')
     } catch (err: any) {
-      toast(err.message || 'Error al eliminar repositorio', 'error')
+      if (wasSelected) setSelectedRepo(targetRepo)
+      toast(err.message || 'Error al eliminar la copia local', 'error')
     } finally {
       setRepoToDelete(null)
     }
@@ -628,9 +637,9 @@ export default function App() {
       {repoToDelete && (
         <div className="overlay">
           <div className="dialog" style={{ width: 400 }}>
-            <div className="dialog-title">🗑 Eliminar repositorio</div>
+            <div className="dialog-title">🗑 Eliminar copia local</div>
             <p style={{ fontSize: 13, color: 'var(--text2)', margin: '0 0 8px' }}>
-              ¿Eliminar <strong style={{ color: 'var(--text1)' }}>{repoToDelete.name}</strong>?
+              ¿Eliminar la copia local de <strong style={{ color: 'var(--text1)' }}>{repoToDelete.name}</strong>?
             </p>
             <p style={{ fontSize: 12, color: 'var(--text2)', margin: '0 0 16px' }}>
               Esto borrará permanentemente la carpeta local. Los archivos en el servidor SVN no se verán afectados.

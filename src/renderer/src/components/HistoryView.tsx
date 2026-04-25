@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { LocalRepo, LogEntry } from '../types/svn'
 import DiffViewer from './DiffViewer'
 import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
+import { isWordFile, isPreviewableFile } from '../utils/fileTypes'
 import { formatClipboardText } from '../utils/clipboard'
 
 interface Props {
@@ -46,18 +47,6 @@ function splitPath(fullPath: string): { dir: string; file: string } {
   const file = parts.pop() || fullPath
   const dir = parts.length > 0 ? '/' + parts.join('/') : ''
   return { dir, file }
-}
-
-function isPdfFile(path: string): boolean {
-  return /\.pdf$/i.test(path)
-}
-
-function isWordFile(path: string): boolean {
-  return /\.(docx|doc)$/i.test(path)
-}
-
-function isPreviewableFile(path: string): boolean {
-  return isPdfFile(path) || isWordFile(path)
 }
 
 interface FileDiffState {
@@ -167,11 +156,11 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
     setPdfPreview({
       title: fileName,
       subtitle: `${repo.name} · ${svnPath}`,
-      fileUrl: null,
-      filePath: null,
+      base64: null,
       loading: true,
       error: null,
-      badge: `r${revision}`
+      badge: `r${revision}`,
+      fileType: isWordFile(fileName) ? 'word' : 'pdf'
     })
 
     try {
@@ -180,15 +169,14 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
       setPdfPreview((prev) => prev ? {
         ...prev,
         title: preview.name,
-        fileUrl: preview.fileUrl,
-        filePath: preview.path,
+        base64: preview.base64,
         loading: false
       } : prev)
     } catch (err: any) {
       setPdfPreview((prev) => prev ? {
         ...prev,
         loading: false,
-        error: err.message || 'No se pudo abrir el PDF'
+        error: err.message || 'No se pudo abrir el archivo'
       } : prev)
     }
   }

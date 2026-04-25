@@ -5,6 +5,7 @@ import DiffViewer from './DiffViewer'
 import BlameView from './BlameView'
 import ConflictResolver from './ConflictResolver'
 import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
+import { isWordFile, isPreviewableFile } from '../utils/fileTypes'
 
 interface Props {
   repo: LocalRepo
@@ -42,18 +43,6 @@ const STATUS_ICON: Record<string, string> = {
   C: '⚠️',
   R: '🔁',
   '!': '❗'
-}
-
-function isPdfFile(path: string): boolean {
-  return /\.pdf$/i.test(path)
-}
-
-function isWordFile(path: string): boolean {
-  return /\.(docx|doc)$/i.test(path)
-}
-
-function isPreviewableFile(path: string): boolean {
-  return isPdfFile(path) || isWordFile(path)
 }
 
 function normalizeError(err: unknown, fallback: string): string {
@@ -174,13 +163,14 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   }, [changeMenu])
 
   const openPdfPreview = async (filePath: string) => {
+    const ft = isWordFile(filePath) ? 'word' as const : 'pdf' as const
     setPdfPreview({
       title: filePath.split('/').pop() || filePath,
       subtitle: `${repo.name} · ${filePath}`,
-      fileUrl: null,
-      filePath: null,
+      base64: null,
       loading: true,
-      error: null
+      error: null,
+      fileType: ft
     })
 
     try {
@@ -188,15 +178,14 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
       setPdfPreview((prev) => prev ? {
         ...prev,
         title: preview.name,
-        fileUrl: preview.fileUrl,
-        filePath: preview.path,
+        base64: preview.base64,
         loading: false
       } : prev)
     } catch (err: any) {
       setPdfPreview((prev) => prev ? {
         ...prev,
         loading: false,
-        error: err.message || 'No se pudo abrir el PDF'
+        error: err.message || 'No se pudo abrir el archivo'
       } : prev)
     }
   }

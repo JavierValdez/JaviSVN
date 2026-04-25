@@ -7,7 +7,6 @@ import { spawn, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
 import { rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'os'
-import { pathToFileURL } from 'node:url'
 
 const _require = createRequire(import.meta.url)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -414,29 +413,43 @@ function sanitizePreviewFileName(value: string, fallback = 'preview.bin'): strin
   return sanitized || fallback
 }
 
-function buildPreviewFileResponse(filePath: string, name?: string): { path: string; name: string; fileUrl: string } {
+function buildPreviewFileResponse(filePath: string, name?: string): { name: string; base64: string } {
   const safeName = sanitizePreviewFileName(name || basename(filePath))
-  return {
-    path: filePath,
-    name: safeName,
-    fileUrl: pathToFileURL(filePath).toString()
-  }
+  const buf = readFileSync(filePath)
+  return { name: safeName, base64: buf.toString('base64') }
 }
 
-async function exportRemotePreviewFile(url: string, suggestedName?: string): Promise<{ path: string; name: string; fileUrl: string }> {
+const previewTempDirs: string[] = []
+
+function cleanupPreviewTempDirs(): void {
+  for (const dir of previewTempDirs) {
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
+  }
+  previewTempDirs.length = 0
+}
+
+async function exportRemotePreviewFile(url: string, suggestedName?: string): Promise<{ name: string; base64: string }> {
   const safeUrl = String(url || '').trim()
   if (!safeUrl) throw new Error('La URL del archivo es requerida')
 
   const fallbackName = basename(safeUrl.replace(/\/+$/g, '')) || 'preview.bin'
   const safeName = sanitizePreviewFileName(suggestedName || fallbackName)
   const previewDir = mkdtempSync(join(tmpdir(), 'javisvn-preview-'))
+  previewTempDirs.push(previewDir)
   const targetPath = join(previewDir, safeName)
 
   await runSvn(['export', '--force', safeUrl, targetPath], {
     timeoutMs: 5 * 60 * 1000
   })
 
-  return buildPreviewFileResponse(targetPath, safeName)
+  const result = buildPreviewFileResponse(targetPath, safeName)
+
+  // Cleanup temp dir immediately after reading
+  try { rmSync(previewDir, { recursive: true, force: true }) } catch { /* ignore */ }
+  const idx = previewTempDirs.indexOf(previewDir)
+  if (idx >= 0) previewTempDirs.splice(idx, 1)
+
+  return result
 }
 
 function isLocalRepoDeleteBusyError(error: unknown): boolean {
@@ -865,7 +878,12 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  cleanupPreviewTempDirs()
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('will-quit', () => {
+  cleanupPreviewTempDirs()
 })
 
 ipcMain.handle('app:newWindow', async (event) => {
@@ -1810,16 +1828,6 @@ ipcMain.handle('svn:getLocalPreviewFile', async (_e, repoPath: string, filePath:
 
 ipcMain.handle('svn:getRemotePreviewFile', async (_e, url: string, defaultName?: string) => {
   return exportRemotePreviewFile(url, defaultName)
-})
-
-ipcMain.handle('pdf:load', async (_e, filePath: string) => {
-  const buf = readFileSync(filePath)
-  return buf.toString('base64')
-})
-
-ipcMain.handle('docx:load', async (_e, filePath: string) => {
-  const buf = readFileSync(filePath)
-  return buf.toString('base64')
 })
 
 ipcMain.handle('svn:getConflictContent', async (_e, repoPath: string, filePath: string) => {

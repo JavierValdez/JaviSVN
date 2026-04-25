@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Credentials, LogEntry, RemoteEntry, RemoteSearchResult, RemoteServer } from '../types/svn'
 import DiffViewer from './DiffViewer'
 import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
+import { isWordFile, isPreviewableFile } from '../utils/fileTypes'
 import { formatClipboardText } from '../utils/clipboard'
 
 interface Props {
@@ -103,18 +104,6 @@ const ACTION_LABEL: Record<string, string> = {
   A: '➕',
   D: '🗑️',
   R: '🔄'
-}
-
-function isPdfFile(path: string): boolean {
-  return /\.pdf$/i.test(path)
-}
-
-function isWordFile(path: string): boolean {
-  return /\.(docx|doc)$/i.test(path)
-}
-
-function isPreviewableFile(path: string): boolean {
-  return isPdfFile(path) || isWordFile(path)
 }
 
 function getSvnApi(): any {
@@ -940,10 +929,10 @@ export default function ExplorerView({
       setPdfPreview({
         title: entry.name,
         subtitle: entry.url,
-        fileUrl: null,
-        filePath: null,
+        base64: null,
         loading: true,
-        error: null
+        error: null,
+        fileType: isWordFile(entry.name) ? 'word' : 'pdf'
       })
       try {
         const svn = getSvnApi()
@@ -951,8 +940,7 @@ export default function ExplorerView({
         setPdfPreview((prev) => prev ? {
           ...prev,
           title: preview.name,
-          fileUrl: preview.fileUrl,
-          filePath: preview.path,
+          base64: preview.base64,
           loading: false
         } : prev)
       } catch (err: any) {
@@ -1002,11 +990,11 @@ export default function ExplorerView({
     setPdfPreview({
       title: fileName,
       subtitle: `${remoteLog.title} · ${svnPath}`,
-      fileUrl: null,
-      filePath: null,
+      base64: null,
       loading: true,
       error: null,
-      badge: `r${revision}`
+      badge: `r${revision}`,
+      fileType: isWordFile(fileName) ? 'word' : 'pdf'
     })
 
     try {
@@ -1016,15 +1004,14 @@ export default function ExplorerView({
       setPdfPreview((prev) => prev ? {
         ...prev,
         title: preview.name,
-        fileUrl: preview.fileUrl,
-        filePath: preview.path,
+        base64: preview.base64,
         loading: false
       } : prev)
     } catch (err: any) {
       setPdfPreview((prev) => prev ? {
         ...prev,
         loading: false,
-        error: normalizeError(err) || 'Error al abrir el PDF'
+        error: normalizeError(err) || 'Error al abrir el archivo'
       } : prev)
     }
   }

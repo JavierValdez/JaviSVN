@@ -60,10 +60,8 @@ declare global {
       status: (repoPath: string) => Promise<FileChange[]>
       diff: (repoPath: string, filePath: string) => Promise<string>
       fileContent: (repoPath: string, filePath: string) => Promise<string>
-      getLocalPreviewFile: (repoPath: string, filePath: string) => Promise<{ path: string; name: string; fileUrl: string }>
-      getRemotePreviewFile: (url: string, defaultName: string) => Promise<{ path: string; name: string; fileUrl: string }>
-      loadPdf: (filePath: string) => Promise<string>
-      loadDocx: (filePath: string) => Promise<string>
+      getLocalPreviewFile: (repoPath: string, filePath: string) => Promise<{ name: string; base64: string }>
+      getRemotePreviewFile: (url: string, defaultName: string) => Promise<{ name: string; base64: string }>
       add: (repoPath: string, filePath: string, scope?: 'item' | 'branch') => Promise<{ success: boolean; scope: 'item' | 'branch'; target: string }>
       ignore: (repoPath: string, filePath: string, scope?: 'item' | 'branch') => Promise<{ success: boolean; scope: 'item' | 'branch'; ignoredName: string; propertyTarget: string; alreadyPresent: boolean }>
       getConflictContent: (repoPath: string, filePath: string) => Promise<ConflictContent>

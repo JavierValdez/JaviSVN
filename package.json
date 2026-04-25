@@ -15,7 +15,10 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.0",
     "@electron-toolkit/utils": "^3.0.0",
+    "docx-preview": "^0.3.7",
     "electron-store": "^8.2.0",
+    "jszip": "^3.10.1",
+    "pdfjs-dist": "^4.10.38",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {

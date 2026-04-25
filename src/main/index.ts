@@ -1812,6 +1812,16 @@ ipcMain.handle('svn:getRemotePreviewFile', async (_e, url: string, defaultName?:
   return exportRemotePreviewFile(url, defaultName)
 })
 
+ipcMain.handle('pdf:load', async (_e, filePath: string) => {
+  const buf = readFileSync(filePath)
+  return buf.toString('base64')
+})
+
+ipcMain.handle('docx:load', async (_e, filePath: string) => {
+  const buf = readFileSync(filePath)
+  return buf.toString('base64')
+})
+
 ipcMain.handle('svn:getConflictContent', async (_e, repoPath: string, filePath: string) => {
   const { targetAbs } = resolveRepoRelativeTarget(repoPath, filePath)
   const dirPath = dirname(targetAbs)

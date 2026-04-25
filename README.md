@@ -2,30 +2,35 @@
 
 Cliente de escritorio SVN para macOS y Windows inspirado en GitHub Desktop.
 
-Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, hacer commits y revisar el historial — todo sin necesidad de usar la línea de comandos.
+Permite explorar repositorios SVN remotos, clonarlos localmente, revisar cambios, hacer commits, navegar historial, resolver conflictos y generar releases sin depender de la línea de comandos para el uso diario.
 
 ---
 
 ## Características
 
-- **Explorador remoto** — navega los repositorios del servidor SVN antes de hacer checkout
-- **Checkout con progreso** — clona repositorios remotos con barra de progreso en tiempo real
-- **Vista de cambios** — lista archivos modificados, diff coloreado línea a línea y commit con mensaje
-- **Historial** — log de revisiones con detalle de archivos afectados por cada commit
-- **Blame** — muestra qué revisión y autor modificó cada línea de un archivo
-- **Resolución de conflictos** — interfaz visual para resolver conflictos de merge
-- **Revertir archivos** — deshace cambios locales con un clic
-- **Auto-add** — los archivos nuevos (sin versionar) se agregan automáticamente al hacer commit
-- **Autenticación** — guarda credenciales y URL del servidor entre sesiones
+- **Explorador remoto** con árbol expandible, gestión de servidores remotos guardados y estado `✓ Local` basado en la URL real del checkout.
+- **Búsqueda remota** por nombre, contenido y comentarios de revisión, con navegación directa desde el resultado hasta la rama encontrada en el árbol.
+- **Historial remoto y local** con diff por archivo y señal visual para cambios fuera del scope del `show log`.
+- **Checkout y export** con progreso en tiempo real.
+- **Vista de cambios** con diff coloreado, commit selectivo, revert y auto-add de archivos sin versionar.
+- **Blame** por línea y **resolución de conflictos** usando `svn resolve`.
+- **Descarga/preview** de archivos remotos y apertura rápida en Finder o editor externo.
+- **Actualización de app** consultando la última release publicada en GitHub.
 
 ---
 
 ## Requisitos
 
-- macOS (Apple Silicon o Intel)
-- Windows 10/11
+- macOS (Apple Silicon o Intel) o Windows 10/11
+- Node.js 20+
+- npm
 
-> SVN viene incluido dentro de la app. No necesitas instalarlo por separado.
+Para desarrollo:
+
+- macOS: `brew install subversion`
+- Windows: normalmente basta el bundle versionado en `resources/bin/`; si necesitas regenerarlo, instala SlikSVN o TortoiseSVN con herramientas de línea de comandos
+
+> La app distribuida ya incluye SVN. El requisito de instalar Subversion aplica al entorno de desarrollo y a CI cuando se regenera el bundle.
 
 ---
 
@@ -33,129 +38,133 @@ Permite explorar repositorios SVN remotos, clonarlos localmente, ver cambios, ha
 
 ### macOS
 
-1. Descarga el instalador `.dmg` desde la [última release](https://github.com/JavierValdez/JaviSVN/releases/latest)
-2. Abre el `.dmg` y lee el archivo `LEER_ANTES_DE_ABRIR.txt` que aparece en la ventana
-3. Arrastra **JaviSVN** a la carpeta **Aplicaciones**
-4. Si macOS muestra *"JaviSVN está dañado y no puede abrirse"*, ejecuta en Terminal:
-    ```bash
-    xattr -cr /Applications/JaviSVN.app
-    ```
-5. Abre JaviSVN normalmente desde Launchpad o Finder
-
-> Este mensaje aparece porque la app no está firmada con una cuenta de desarrollador de Apple. El comando `xattr -cr` elimina la cuarentena de macOS. Solo necesitas hacerlo una vez tras cada instalación.
+1. Descarga el `.dmg` desde la [última release](https://github.com/JavierValdez/JaviSVN/releases/latest).
+2. Abre el instalador y lee `LEER_ANTES_DE_ABRIR.txt`.
+3. Arrastra **JaviSVN** a **Aplicaciones**.
+4. Si macOS muestra que la app está dañada o bloqueada, ejecuta:
+```bash
+xattr -cr /Applications/JaviSVN.app
+```
 
 ### Windows
 
-1. Descarga el instalador `.exe` desde la [última release](https://github.com/JavierValdez/JaviSVN/releases/latest)
-2. Ejecuta el instalador NSIS y sigue el asistente
-3. Abre JaviSVN desde el acceso directo de escritorio o desde Inicio
+1. Descarga el `.exe` desde la [última release](https://github.com/JavierValdez/JaviSVN/releases/latest).
+2. Ejecuta el instalador NSIS.
+3. Abre JaviSVN desde el acceso directo o el menú Inicio.
 
 ---
 
 ## Primeros pasos
 
-1. Al abrir la app por primera vez, se muestra el diálogo de conexión
-2. Ingresa la URL de tu servidor SVN, usuario y contraseña
-3. Usa la pestaña **Explorar** para navegar los repositorios del servidor
-4. Haz clic en **Checkout** para clonar un repositorio localmente
-5. El repositorio aparecerá en la barra lateral izquierda
+1. Configura URL, usuario y contraseña en el diálogo inicial.
+2. Guarda el servidor remoto para reutilizarlo después.
+3. En la pestaña **Explorar**, navega el árbol remoto o usa búsqueda profunda.
+4. Haz checkout o export de la carpeta que te interese.
+5. Desde **Cambios** o **Historial**, revisa diffs, blame, conflictos y commits.
 
 ---
 
-## Stack tecnológico
-
-| Capa | Tecnología |
-|---|---|
-| Framework de escritorio | Electron 32 |
-| Build tool | electron-vite 5 |
-| UI | React 18 + TypeScript |
-| Backend SVN | CLI de Subversion vía `child_process.spawn` |
-| Comunicación | IPC Electron (`ipcMain.handle` / `contextBridge`) |
-| Módulos | ESM (`"type": "module"`) |
-
----
-
-## Desarrollo
-
-### Requisitos previos
-
-- Node.js 20+
-- npm
-- SVN instalado en el sistema:
-    - macOS: `brew install subversion`
-    - Windows: TortoiseSVN con command line tools
-
-> El build final empaqueta sus propios binarios SVN para cada plataforma.
-
-### Iniciar en modo desarrollo
+## Comandos útiles
 
 ```bash
-git clone https://github.com/JavierValdez/JaviSVN.git
-cd JaviSVN
-npm install
+# Desarrollo
 ./start.sh
+npm run dev
+
+# Build local
+npm run build
+npm run dist
+
+# Publicación local manual a GitHub Releases
+npm run release
+
+# Validación TypeScript real
+npx tsc -p tsconfig.web.json --noEmit
+npx tsc -p tsconfig.node.json --noEmit
 ```
 
-> Usar `./start.sh` en lugar de `npm run dev` directamente para evitar conflictos con la variable de entorno `ELECTRON_RUN_AS_NODE`.
+> `ELECTRON_RUN_AS_NODE` no debe estar seteado al iniciar la app. `./start.sh` y los scripts del proyecto lo limpian.
 
-> En Windows, usar `npm run dev` (el script ya limpia `ELECTRON_RUN_AS_NODE` con `cross-env`).
+---
 
-### Compilar el instalador
+## Arquitectura
+
+```text
+src/
+├── main/
+│   ├── index.ts        # IPC handlers, integración SVN CLI, búsquedas, release/update helpers
+│   └── updater.ts      # Consulta de releases de GitHub y estado de actualización
+├── preload/
+│   └── index.ts        # Bridge seguro: window.svn y window.appUpdate
+└── renderer/src/
+    ├── App.tsx
+    ├── App.css
+    ├── types/svn.ts
+    └── components/
+        ├── Sidebar.tsx
+        ├── ExplorerView.tsx
+        ├── ChangesView.tsx
+        ├── HistoryView.tsx
+        ├── DiffViewer.tsx
+        ├── BlameView.tsx
+        ├── ConflictResolver.tsx
+        └── AuthDialog.tsx
+```
+
+---
+
+## Despliegue
+
+### Flujo automático actual
+
+El despliegue ahora está automatizado en `.github/workflows/release.yml`.
+
+1. Actualiza la versión en `package.json` y `package-lock.json`.
+2. Haz commit y push a `main`.
+3. Crea un tag con el mismo número de versión, por ejemplo `v1.6.2`.
+4. Empuja el tag:
+
+```bash
+git push origin main
+git tag v1.6.2
+git push origin v1.6.2
+```
+
+5. GitHub Actions ejecuta la workflow `Release`:
+   - `macos-latest`: instala `subversion`, genera `.dmg` y `.zip`
+   - `windows-latest`: instala `sliksvn`, regenera el bundle si hace falta y genera `.exe` NSIS x64
+6. `electron-builder --publish always` publica los artefactos en GitHub Releases usando el tag.
+
+Secrets opcionales para firma/notarización:
+
+- `CSC_LINK`
+- `CSC_KEY_PASSWORD`
+- `APPLE_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+- `APPLE_TEAM_ID`
+
+### Flujo manual de respaldo
+
+Si necesitas publicar sin GitHub Actions:
 
 ```bash
 npm run dist
-# macOS: dist/JaviSVN-X.Y.Z-arm64.dmg
-# Windows: dist/JaviSVN Setup X.Y.Z.exe
-```
-
-### Checklist de release Windows (NSIS)
-
-1. Verifica versión en `package.json` y `package-lock.json`
-2. Ejecuta `npm run build` (incluye bundle de `svn.exe` + DLLs)
-3. Ejecuta `npm run dist`
-4. Comprueba artefacto `dist/JaviSVN Setup X.Y.Z.exe`
-5. Prueba instalación en Windows limpio:
-    - la app abre
-    - detecta SVN bundleado (`svn:version` devuelve versión)
-    - checkout, status y commit funcionan
-6. Publica release en GitHub adjuntando el `.exe` (y `.dmg` si aplica)
-
-### Verificar TypeScript
-
-```bash
-npx tsc --noEmit
+gh release create vX.Y.Z dist/* --title "JaviSVN vX.Y.Z"
 ```
 
 ---
 
-## Estructura del proyecto
+## Notas de desarrollo
 
-```
-src/
-├── main/index.ts          # Proceso principal: IPC handlers, invocación SVN CLI
-├── preload/index.ts       # Bridge: expone window.svn al renderer via contextBridge
-└── renderer/src/
-    ├── App.tsx            # Root: estado global, pestañas, toasts
-    └── components/
-        ├── Sidebar.tsx        # Lista de repositorios locales
-        ├── ExplorerView.tsx   # Explorador de repos remotos + checkout
-        ├── ChangesView.tsx    # Archivos modificados + diff + commit
-        ├── HistoryView.tsx    # Log SVN con detalle por revisión
-        ├── DiffViewer.tsx     # Renderer de diffs unificados
-        ├── BlameView.tsx      # Vista blame por línea
-        └── ConflictResolver.tsx  # Resolución de conflictos
-```
-
----
-
-## Notas
-
-- Las credenciales se guardan localmente en:
-    - macOS: `~/Library/Application Support/javisvn/javisvn-config.json`
-    - Windows: `%APPDATA%/javisvn/javisvn-config.json`
-- Los repositorios clonados se guardan en:
-    - macOS: `~/Documents/JaviSvn/`
-    - Windows: `%USERPROFILE%/Documents/JaviSvn/`
+- `package.json` usa ESM obligatorio (`"type": "module"`).
+- `xml2js` se importa en `main` usando `createRequire`.
+- El store es un JSON simple en:
+  - macOS: `~/Library/Application Support/javisvn/javisvn-config.json`
+  - Windows: `%APPDATA%/javisvn/javisvn-config.json`
+- Los repositorios locales se guardan en:
+  - macOS: `~/Documents/JaviSvn/`
+  - Windows: `%USERPROFILE%/Documents/JaviSvn/`
+- `resources/bin/` y `resources/lib/` forman parte del repo y se usan para empaquetar SVN en las builds.
 
 ---
 

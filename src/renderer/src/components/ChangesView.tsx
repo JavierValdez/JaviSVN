@@ -48,6 +48,14 @@ function isPdfFile(path: string): boolean {
   return /\.pdf$/i.test(path)
 }
 
+function isWordFile(path: string): boolean {
+  return /\.(docx|doc)$/i.test(path)
+}
+
+function isPreviewableFile(path: string): boolean {
+  return isPdfFile(path) || isWordFile(path)
+}
+
 function normalizeError(err: unknown, fallback: string): string {
   if (err instanceof Error && err.message.trim()) return err.message.trim()
   return fallback
@@ -170,6 +178,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
       title: filePath.split('/').pop() || filePath,
       subtitle: `${repo.name} · ${filePath}`,
       fileUrl: null,
+      filePath: null,
       loading: true,
       error: null
     })
@@ -180,6 +189,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
         ...prev,
         title: preview.name,
         fileUrl: preview.fileUrl,
+        filePath: preview.path,
         loading: false
       } : prev)
     } catch (err: any) {
@@ -194,7 +204,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   const loadDiff = async (filePath: string) => {
     setSelectedFile(filePath)
     const current = changes.find((c) => c.path === filePath)
-    if (current && isPdfFile(filePath) && current.status !== 'D' && current.status !== '!') {
+    if (current && isPreviewableFile(filePath) && current.status !== 'D' && current.status !== '!') {
       setDiff('')
       setDiffLoading(false)
       await openPdfPreview(filePath)
@@ -469,7 +479,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   })
 
   const canShowBlame = selectedChange ? !['?', 'A', 'D', '!', 'C'].includes(selectedChange.status) : false
-  const canPreviewPdf = Boolean(selectedChange && isPdfFile(selectedChange.path) && !['D', '!'].includes(selectedChange.status))
+  const canPreviewFile = Boolean(selectedChange && isPreviewableFile(selectedChange.path) && !['D', '!'].includes(selectedChange.status))
   const showInitialLoading = loading && changes.length === 0
 
   return (
@@ -615,14 +625,14 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
                 ⚠ Resolver conflicto
               </button>
             )}
-            {canPreviewPdf && (
+            {canPreviewFile && (
               <button
                 className="btn btn-default"
                 style={{ padding: '4px 10px', fontSize: 11 }}
                 onClick={() => openPdfPreview(selectedChange.path)}
-                title="Abrir visor PDF"
+                title="Abrir visor"
               >
-                📕 Ver PDF
+                {isWordFile(selectedChange.path) ? '📘 Ver Word' : '📕 Ver PDF'}
               </button>
             )}
           </div>
@@ -631,16 +641,16 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
           <div className="diff-empty">
             <div className="spinner spinner-lg" />
           </div>
-        ) : canPreviewPdf ? (
+        ) : canPreviewFile && selectedChange ? (
           <div className="diff-empty">
-            <div className="diff-empty-icon">📕</div>
-            <div className="diff-empty-text">Este archivo se abre en el visor PDF integrado</div>
+            <div className="diff-empty-icon">{isWordFile(selectedChange.path) ? '📘' : '📕'}</div>
+            <div className="diff-empty-text">Este archivo se abre en el visor integrado</div>
             <button
               className="btn btn-default"
               style={{ marginTop: 8 }}
-              onClick={() => selectedChange && openPdfPreview(selectedChange.path)}
+              onClick={() => openPdfPreview(selectedChange.path)}
             >
-              Abrir visor PDF
+              {isWordFile(selectedChange.path) ? 'Abrir documento Word' : 'Abrir visor PDF'}
             </button>
           </div>
         ) : selectedFile ? (

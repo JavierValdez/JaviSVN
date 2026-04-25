@@ -52,6 +52,14 @@ function isPdfFile(path: string): boolean {
   return /\.pdf$/i.test(path)
 }
 
+function isWordFile(path: string): boolean {
+  return /\.(docx|doc)$/i.test(path)
+}
+
+function isPreviewableFile(path: string): boolean {
+  return isPdfFile(path) || isWordFile(path)
+}
+
 interface FileDiffState {
   svnPath: string
   fileName: string
@@ -160,6 +168,7 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
       title: fileName,
       subtitle: `${repo.name} · ${svnPath}`,
       fileUrl: null,
+      filePath: null,
       loading: true,
       error: null,
       badge: `r${revision}`
@@ -172,6 +181,7 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
         ...prev,
         title: preview.name,
         fileUrl: preview.fileUrl,
+        filePath: preview.path,
         loading: false
       } : prev)
     } catch (err: any) {
@@ -350,7 +360,7 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
                     const meta = ACTION_META[p.action] || { label: p.action, cls: 'action-other' }
                     const { dir, file } = splitPath(p.path)
                     const canDiff = p.action !== 'D'
-                    const opensPdf = canDiff && isPdfFile(p.path)
+                    const opensPreview = canDiff && isPreviewableFile(p.path)
                     const restoreKey = `${selected.revision}:${p.path}:${p.action}`
                     const isRestoring = restoringKey === restoreKey
                     const restoreRevision = p.action === 'D' ? selected.revision - 1 : selected.revision
@@ -359,8 +369,8 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
                       <div
                         key={i}
                         className={`history-path-item ${canDiff ? 'history-path-item-clickable' : ''}`}
-                        onClick={() => canDiff && (opensPdf ? openPdfAtRevision(p.path, selected.revision) : openFileDiff(p.path, selected.revision))}
-                        title={canDiff ? (opensPdf ? 'Ver PDF de esta revisión' : 'Ver diff de este archivo') : ''}
+                        onClick={() => canDiff && (opensPreview ? openPdfAtRevision(p.path, selected.revision) : openFileDiff(p.path, selected.revision))}
+                        title={canDiff ? (opensPreview ? 'Ver documento de esta revisión' : 'Ver diff de este archivo') : ''}
                       >
                         <span className={`history-action-badge ${meta.cls}`}>{meta.label}</span>
                         <div className="history-path-text" style={{ flex: 1 }}>
@@ -417,7 +427,7 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
                             </button>
                           )
                         })()}
-                        {canDiff && <span className="history-path-diff-hint">{opensPdf ? 'Ver PDF →' : 'Ver diff →'}</span>}
+                        {canDiff && <span className="history-path-diff-hint">{opensPreview ? (isWordFile(p.path) ? 'Ver Word →' : 'Ver PDF →') : 'Ver diff →'}</span>}
                       </div>
                     )
                   })}

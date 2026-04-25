@@ -92,9 +92,10 @@ type EntrySortMode = 'name' | 'revision' | 'date'
 
 const BINARY_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg',
-  'pdf', 'zip', 'jar', 'war', 'tar', 'gz', 'rar', '7z',
+  'zip', 'jar', 'war', 'tar', 'gz', 'rar', '7z',
   'exe', 'dll', 'so', 'dylib', 'class',
-  'mp3', 'mp4', 'avi', 'mov', 'wav', 'flac'
+  'mp3', 'mp4', 'avi', 'mov', 'wav', 'flac',
+  'doc', 'docx'
 ])
 
 const ACTION_LABEL: Record<string, string> = {
@@ -106,6 +107,14 @@ const ACTION_LABEL: Record<string, string> = {
 
 function isPdfFile(path: string): boolean {
   return /\.pdf$/i.test(path)
+}
+
+function isWordFile(path: string): boolean {
+  return /\.(docx|doc)$/i.test(path)
+}
+
+function isPreviewableFile(path: string): boolean {
+  return isPdfFile(path) || isWordFile(path)
 }
 
 function getSvnApi(): any {
@@ -926,12 +935,13 @@ export default function ExplorerView({
 
   const openFileViewer = async (entry: RemoteEntry) => {
     const ext = entry.name.split('.').pop()?.toLowerCase() || ''
-    if (ext === 'pdf') {
+    if (isPreviewableFile(entry.name)) {
       setFileViewer({ open: false, url: '', name: '', content: null, loading: false, error: null })
       setPdfPreview({
         title: entry.name,
         subtitle: entry.url,
         fileUrl: null,
+        filePath: null,
         loading: true,
         error: null
       })
@@ -942,13 +952,14 @@ export default function ExplorerView({
           ...prev,
           title: preview.name,
           fileUrl: preview.fileUrl,
+          filePath: preview.path,
           loading: false
         } : prev)
       } catch (err: any) {
         setPdfPreview((prev) => prev ? {
           ...prev,
           loading: false,
-          error: normalizeError(err) || 'Error al abrir el PDF'
+          error: normalizeError(err) || 'Error al abrir el archivo'
         } : prev)
       }
       return
@@ -992,6 +1003,7 @@ export default function ExplorerView({
       title: fileName,
       subtitle: `${remoteLog.title} · ${svnPath}`,
       fileUrl: null,
+      filePath: null,
       loading: true,
       error: null,
       badge: `r${revision}`
@@ -1005,6 +1017,7 @@ export default function ExplorerView({
         ...prev,
         title: preview.name,
         fileUrl: preview.fileUrl,
+        filePath: preview.path,
         loading: false
       } : prev)
     } catch (err: any) {
@@ -1542,16 +1555,16 @@ export default function ExplorerView({
                         </div>
                         {remoteLog.selected.paths.map((p, i) => {
                           const canDiff = p.action !== 'D'
-                          const opensPdf = canDiff && isPdfFile(p.path)
+                          const opensPreview = canDiff && isPreviewableFile(p.path)
                           const isInScope = isPathWithinRemoteLogScope(p.path, remoteLogScopePath)
                           return (
                             <div
                               key={i}
                               className={`history-path-item ${canDiff ? 'history-path-item-clickable' : ''} ${!isInScope ? 'history-path-item-outside' : ''}`}
-                              onClick={() => canDiff && (opensPdf ? openRemotePdfRevision(p.path, remoteLog.selected!.revision) : openRemoteFileDiff(p.path, remoteLog.selected!.revision))}
+                              onClick={() => canDiff && (opensPreview ? openRemotePdfRevision(p.path, remoteLog.selected!.revision) : openRemoteFileDiff(p.path, remoteLog.selected!.revision))}
                               title={!isInScope
                                 ? 'Cambio fuera de la carpeta a la que hiciste show log'
-                                : canDiff ? (opensPdf ? 'Ver PDF de esta revisión' : 'Ver diff de este archivo') : ''}
+                                : canDiff ? (opensPreview ? 'Ver documento de esta revisión' : 'Ver diff de este archivo') : ''}
                             >
                               <span title={p.action}>{ACTION_LABEL[p.action] || p.action}</span>
                               <span className="history-remote-path" style={{ flex: 1 }}>{p.path}</span>
@@ -1596,7 +1609,7 @@ export default function ExplorerView({
                                   </button>
                                 )
                               })()}
-                              {canDiff && <span className="history-path-diff-hint">{opensPdf ? 'Ver PDF →' : 'Ver diff →'}</span>}
+                              {canDiff && <span className="history-path-diff-hint">{opensPreview ? (isWordFile(p.path) ? 'Ver Word →' : 'Ver PDF →') : 'Ver diff →'}</span>}
                             </div>
                           )
                         })}

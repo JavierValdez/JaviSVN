@@ -1083,6 +1083,18 @@ ipcMain.handle('creds:set', (_e, creds: { username: string; password: string; se
   return true
 })
 
+ipcMain.handle('creds:update', (_e, creds: { username: string; password: string; serverUrl: string }) => {
+  const current = getStoredCredentials()
+  const updated = {
+    username: creds.username.trim(),
+    password: creds.password || current?.password || '',
+    serverUrl: creds.serverUrl?.trim() || current?.serverUrl || ''
+  }
+  writeStoredCredentials(updated)
+  if (updated.serverUrl) setCurrentServerUrl(updated.serverUrl)
+  return true
+})
+
 ipcMain.handle('creds:clear', () => {
   storeDelete('credentials')
   return true

@@ -5,6 +5,7 @@ import ChangesView from './components/ChangesView'
 import ExplorerView from './components/ExplorerView'
 import HistoryView from './components/HistoryView'
 import AuthDialog from './components/AuthDialog'
+import ProfileDialog from './components/ProfileDialog'
 
 export interface AppUpdateState {
   stage: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error' | 'unsupported'
@@ -27,6 +28,7 @@ declare global {
     svn: {
       getCredentials: () => Promise<Credentials | null>
       setCredentials: (c: { username: string; password: string; serverUrl: string }) => Promise<boolean>
+      updateCredentials: (c: { username: string; password: string; serverUrl: string }) => Promise<boolean>
       clearCredentials: () => Promise<boolean>
       getServerUrl: () => Promise<string>
       setServerUrl: (serverUrl: string) => Promise<boolean>
@@ -137,6 +139,8 @@ export default function App() {
   const [renameRemoteUrl, setRenameRemoteUrl] = useState('')
   const [availableEditors, setAvailableEditors] = useState<EditorOption[]>([])
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
+  const [showProfileDialog, setShowProfileDialog] = useState(false)
+  const [authErrorDetected, setAuthErrorDetected] = useState(false)
   const selectedRepoPathRef = useRef<string | null>(null)
   const changesSignatureRef = useRef('')
   const loadChangesRequestIdRef = useRef(0)
@@ -297,9 +301,30 @@ export default function App() {
     await refreshRemotes()
   }
 
-  const handleRequestCredentials = (serverUrl?: string) => {
+  const handleRequestCredentials = (serverUrl?: string, authError = false) => {
     if (serverUrl?.trim()) setAuthInitialServerUrl(serverUrl.trim())
-    setShowAuthDialog(true)
+    setAuthErrorDetected(authError)
+    if (authError && credentials) {
+      setShowProfileDialog(true)
+    } else {
+      setShowAuthDialog(true)
+    }
+  }
+
+  const handleProfileSave = async (creds: { username: string; password: string; serverUrl: string }) => {
+    if (creds.password) {
+      await window.svn.setCredentials(creds)
+      setCredentials(creds as Credentials)
+    } else {
+      await window.svn.updateCredentials(creds)
+      setCredentials({ username: creds.username, password: credentials?.password || '', serverUrl: creds.serverUrl } as Credentials)
+    }
+    setAuthInitialServerUrl(creds.serverUrl || DEFAULT_SERVER_URL)
+    setShowProfileDialog(false)
+    setAuthErrorDetected(false)
+    toast('Credenciales actualizadas', 'success')
+    await refreshRepos()
+    await refreshRemotes()
   }
 
   const handleLogout = async () => {
@@ -527,6 +552,7 @@ export default function App() {
           selectedRepo={selectedRepo}
           isExplorerActive={activeTab === 'explorer'}
           activeRemoteId={activeRemoteId}
+          credentials={credentials}
           onSelectRepo={handleSelectRepo}
           onSelectRemote={handleSelectRemote}
           onAddRemote={handleAddRemote}
@@ -537,6 +563,7 @@ export default function App() {
           onOpenInEditor={handleOpenInEditor}
           onDeleteRemote={handleDeleteRemote}
           onRenameRemote={handleRenameRemote}
+          onOpenProfile={() => setShowProfileDialog(true)}
         />
 
         {/* Main area */}
@@ -644,8 +671,26 @@ export default function App() {
       {showAuthDialog && (
         <AuthDialog
           onSave={handleAuthSave}
-          onCancel={() => setShowAuthDialog(false)}
+          onCancel={() => {
+            setShowAuthDialog(false)
+            setAuthErrorDetected(false)
+          }}
           initialServerUrl={authInitialServerUrl}
+          authError={authErrorDetected}
+        />
+      )}
+
+      {/* Profile Dialog */}
+      {showProfileDialog && credentials && (
+        <ProfileDialog
+          currentUsername={credentials.username}
+          currentServerUrl={authInitialServerUrl}
+          onSave={handleProfileSave}
+          onCancel={() => {
+            setShowProfileDialog(false)
+            setAuthErrorDetected(false)
+          }}
+          authError={authErrorDetected}
         />
       )}
 

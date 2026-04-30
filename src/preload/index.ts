@@ -5,6 +5,8 @@ const svnAPI = {
   getCredentials: () => ipcRenderer.invoke('creds:get'),
   setCredentials: (creds: { username: string; password: string; serverUrl: string }) =>
     ipcRenderer.invoke('creds:set', creds),
+  updateCredentials: (creds: { username: string; password: string; serverUrl: string }) =>
+    ipcRenderer.invoke('creds:update', creds),
   clearCredentials: () => ipcRenderer.invoke('creds:clear'),
   getServerUrl: () => ipcRenderer.invoke('creds:getServerUrl'),
   setServerUrl: (serverUrl: string) => ipcRenderer.invoke('creds:setServerUrl', serverUrl),

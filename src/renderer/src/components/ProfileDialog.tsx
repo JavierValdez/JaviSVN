@@ -1,16 +1,18 @@
 import { useState } from 'react'
 
 interface Props {
+  currentUsername: string
+  currentServerUrl: string
   onSave: (creds: { username: string; password: string; serverUrl: string }) => void
   onCancel: () => void
-  initialServerUrl?: string
   authError?: boolean
 }
 
-export default function AuthDialog({ onSave, onCancel, initialServerUrl = '', authError = false }: Props) {
-  const [username, setUsername] = useState('')
+export default function ProfileDialog({ currentUsername, currentServerUrl, onSave, onCancel, authError = false }: Props) {
+  const [username, setUsername] = useState(currentUsername)
   const [password, setPassword] = useState('')
-  const [serverUrl, setServerUrl] = useState(initialServerUrl)
+  const [serverUrl, setServerUrl] = useState(currentServerUrl)
+  const [showPassword, setShowPassword] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
 
@@ -20,9 +22,9 @@ export default function AuthDialog({ onSave, onCancel, initialServerUrl = '', au
     try {
       const result = await window.svn.pingWithCreds({ url: serverUrl, username, password })
       if (result.ok) {
-        setTestResult({ ok: true, msg: 'Conexión exitosa ✓' })
+        setTestResult({ ok: true, msg: 'Conexion exitosa ✓' })
       } else {
-        setTestResult({ ok: false, msg: result.message || 'Error de conexión' })
+        setTestResult({ ok: false, msg: result.message || 'Error de conexion' })
       }
     } catch (err: any) {
       setTestResult({ ok: false, msg: err.message || 'Error' })
@@ -38,14 +40,14 @@ export default function AuthDialog({ onSave, onCancel, initialServerUrl = '', au
 
   return (
     <div className="overlay">
-      <div className="dialog">
+      <div className="dialog" style={{ width: 420 }}>
         <div className="dialog-title">
-          {authError ? '🔐 Credenciales invalidas' : '🔐 Conectar al servidor SVN'}
+          {authError ? '🔐 Credenciales invalidas' : '👤 Perfil de usuario'}
         </div>
         <div className="dialog-sub">
           {authError
-            ? 'Tu contrasena puede haber cambiado. Ingresa tus credenciales nuevamente.'
-            : 'Ingresa tus credenciales para acceder al repositorio SVN interno'}
+            ? 'Tu contrasena puede haber cambiado. Actualiza tus credenciales para continuar.'
+            : 'Actualiza tus credenciales de acceso al servidor SVN'}
         </div>
 
         <div className="form-field">
@@ -71,14 +73,39 @@ export default function AuthDialog({ onSave, onCancel, initialServerUrl = '', au
 
         <div className="form-field">
           <label className="form-label">Contraseña</label>
-          <input
-            className="form-input"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-            onKeyDown={(e) => { if (e.key === 'Enter') handleSave() }}
-          />
+          <div style={{ position: 'relative' }}>
+            <input
+              className="form-input"
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSave() }}
+              style={{ paddingRight: 70 }}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              style={{
+                position: 'absolute',
+                right: 6,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'none',
+                border: 'none',
+                color: 'var(--text3)',
+                fontSize: 11,
+                cursor: 'pointer',
+                padding: '2px 6px',
+                borderRadius: 4
+              }}
+            >
+              {showPassword ? 'Ocultar' : 'Mostrar'}
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
+            Deja en blanco para mantener la contraseña actual
+          </div>
         </div>
 
         {testResult && (
@@ -96,7 +123,7 @@ export default function AuthDialog({ onSave, onCancel, initialServerUrl = '', au
 
         <div className="dialog-actions">
           <button className="btn btn-ghost" onClick={handleTest} disabled={testing || !username || !serverUrl}>
-            {testing ? 'Probando...' : 'Probar conexión'}
+            {testing ? 'Probando...' : 'Probar conexion'}
           </button>
           <button className="btn btn-default" onClick={onCancel}>
             Cancelar

@@ -11,7 +11,7 @@ interface Props {
   activeRemote: RemoteServer | null
   onSaveRemote: (name: string, url: string) => Promise<void>
   onCheckoutDone: () => void
-  onRequestCredentials: (serverUrl?: string) => void
+  onRequestCredentials: (serverUrl?: string, authError?: boolean) => void
   onLogout: () => Promise<void>
   toast: (msg: string, type?: 'success' | 'error' | 'info') => void
 }
@@ -117,6 +117,11 @@ function getSvnApi(): any {
 function normalizeError(err: any): string {
   const raw = String(err?.message || err || 'Error desconocido')
   return raw.replace(/^Error invoking remote method '[^']+': Error:\s*/i, '').trim()
+}
+
+function isAuthError(err: any): boolean {
+  const msg = normalizeError(err)
+  return /Authentication|authorization|E170001|creden|autentic|contrasena|password/i.test(msg)
 }
 
 function copyToClipboard(text: string, label: string, toast: Props['toast']): void {
@@ -445,7 +450,11 @@ export default function ExplorerView({
       setChildrenCache({})
       setLoadingChildrenUrls(new Set())
     } catch (err: any) {
-      setError(normalizeError(err) || 'Error al conectar con el servidor SVN')
+      const msg = normalizeError(err) || 'Error al conectar con el servidor SVN'
+      setError(msg)
+      if (isAuthError(err)) {
+        onRequestCredentials(nextUrl, true)
+      }
     } finally {
       setLoading(false)
     }
@@ -468,6 +477,11 @@ export default function ExplorerView({
       const svn = getSvnApi()
       const children = await svn.listRemote(parentUrl)
       setChildrenCache((prev) => ({ ...prev, [key]: children }))
+    } catch (err: any) {
+      if (isAuthError(err)) {
+        onRequestCredentials(parentUrl, true)
+      }
+      throw err
     } finally {
       setLoadingChildrenUrls((prev) => {
         const next = new Set(prev)
@@ -517,7 +531,11 @@ export default function ExplorerView({
         const children = await svn.listRemote(entry.url)
         setChildrenCache((prev) => ({ ...prev, [key]: children }))
       } catch (err: any) {
-        toast('Error al cargar contenido: ' + normalizeError(err), 'error')
+        if (isAuthError(err)) {
+          onRequestCredentials(entry.url, true)
+        } else {
+          toast('Error al cargar contenido: ' + normalizeError(err), 'error')
+        }
         setExpandedUrls((prev) => {
           const next = new Set(prev)
           next.delete(key)
@@ -830,6 +848,9 @@ export default function ExplorerView({
       setChildrenCache((prev) => ({ ...prev, [parentUrl]: children }))
       await waitForNextPaint()
     } catch (err) {
+      if (isAuthError(err)) {
+        onRequestCredentials(parentUrl, true)
+      }
       if (!wasExpanded) {
         setExpandedUrls((prev) => {
           const next = new Set(prev)

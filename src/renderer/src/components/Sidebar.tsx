@@ -8,6 +8,7 @@ interface Props {
   selectedRepo: LocalRepo | null
   isExplorerActive: boolean
   activeRemoteId: string | null
+  credentials: { username: string } | null
   onSelectRepo: (repo: LocalRepo) => void
   onSelectRemote: (remoteId: string) => void
   onAddRemote: () => void
@@ -18,6 +19,7 @@ interface Props {
   onOpenInEditor: (editorId: EditorId, path: string) => void
   onDeleteRemote: (remote: RemoteServer) => void
   onRenameRemote: (remote: RemoteServer) => void
+  onOpenProfile: () => void
 }
 
 function timeAgo(dateStr: string): string {
@@ -37,6 +39,7 @@ export default function Sidebar({
   selectedRepo,
   isExplorerActive,
   activeRemoteId,
+  credentials,
   onSelectRepo,
   onSelectRemote,
   onAddRemote,
@@ -46,7 +49,8 @@ export default function Sidebar({
   availableEditors,
   onOpenInEditor,
   onDeleteRemote,
-  onRenameRemote
+  onRenameRemote,
+  onOpenProfile
 }: Props) {
   const [openMenuPath, setOpenMenuPath] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -247,6 +251,46 @@ export default function Sidebar({
             <div className="sidebar-item-sub">Conectar nueva URL</div>
           </div>
         </div>
+      </div>
+
+      {/* Profile footer */}
+      <div className="sidebar-footer">
+        {credentials?.username ? (
+          <button
+            className="btn btn-ghost"
+            style={{
+              width: '100%',
+              justifyContent: 'flex-start',
+              gap: 8,
+              padding: '6px 10px',
+              fontSize: 12,
+              color: 'var(--sidebar-text)'
+            }}
+            onClick={onOpenProfile}
+            title="Cambiar usuario o contrasena"
+          >
+            <span>👤</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {credentials.username}
+            </span>
+          </button>
+        ) : (
+          <button
+            className="btn btn-ghost"
+            style={{
+              width: '100%',
+              justifyContent: 'flex-start',
+              gap: 8,
+              padding: '6px 10px',
+              fontSize: 12,
+              color: 'var(--sidebar-muted)'
+            }}
+            onClick={onOpenProfile}
+          >
+            <span>⚠️</span>
+            <span>Sin credenciales</span>
+          </button>
+        )}
       </div>
 
     </div>

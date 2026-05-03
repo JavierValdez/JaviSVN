@@ -16,13 +16,26 @@ function sanitizeCredentialsForRenderer(creds: StoredCredentialsPayload | null) 
   }
 }
 
+async function invokeWithTransientPassword(
+  channel: string,
+  creds: { username: string; password: string; serverUrl: string }
+) {
+  const payload = { ...creds }
+  try {
+    return await ipcRenderer.invoke(channel, payload)
+  } finally {
+    // Avoid retaining the real SVN password in renderer-owned objects after IPC serialization.
+    creds.password = ''
+  }
+}
+
 const svnAPI = {
   // Credentials
   getCredentials: async () => sanitizeCredentialsForRenderer(await ipcRenderer.invoke('creds:get')),
   setCredentials: (creds: { username: string; password: string; serverUrl: string }) =>
-    ipcRenderer.invoke('creds:set', creds),
+    invokeWithTransientPassword('creds:set', creds),
   updateCredentials: (creds: { username: string; password: string; serverUrl: string }) =>
-    ipcRenderer.invoke('creds:update', creds),
+    invokeWithTransientPassword('creds:update', creds),
   clearCredentials: () => ipcRenderer.invoke('creds:clear'),
   getServerUrl: () => ipcRenderer.invoke('creds:getServerUrl'),
   setServerUrl: (serverUrl: string) => ipcRenderer.invoke('creds:setServerUrl', serverUrl),

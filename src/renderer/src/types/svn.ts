@@ -1,7 +1,12 @@
 export interface Credentials {
   username: string
-  password: string
+  /**
+   * Deprecated: kept only for backwards-compatible renderer state shape.
+   * The real SVN password must never be returned from the main process to the renderer.
+   */
+  password?: string
   serverUrl: string
+  hasPassword?: boolean
 }
 
 export interface RemoteServer {

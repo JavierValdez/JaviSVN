@@ -1,8 +1,24 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+interface StoredCredentialsPayload {
+  username?: string
+  password?: string
+  serverUrl?: string
+}
+
+function sanitizeCredentialsForRenderer(creds: StoredCredentialsPayload | null) {
+  if (!creds) return null
+
+  return {
+    username: creds.username || '',
+    serverUrl: creds.serverUrl || '',
+    hasPassword: Boolean(creds.password)
+  }
+}
+
 const svnAPI = {
   // Credentials
-  getCredentials: () => ipcRenderer.invoke('creds:get'),
+  getCredentials: async () => sanitizeCredentialsForRenderer(await ipcRenderer.invoke('creds:get')),
   setCredentials: (creds: { username: string; password: string; serverUrl: string }) =>
     ipcRenderer.invoke('creds:set', creds),
   updateCredentials: (creds: { username: string; password: string; serverUrl: string }) =>

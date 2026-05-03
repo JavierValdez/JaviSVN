@@ -33,7 +33,13 @@ export default function AuthDialog({ onSave, onCancel, initialServerUrl = '', au
 
   const handleSave = () => {
     if (!username.trim()) return
-    onSave({ username: username.trim(), password, serverUrl: serverUrl.trim() })
+
+    const creds = { username: username.trim(), password, serverUrl: serverUrl.trim() }
+    void onSave(creds)
+
+    // Do not retain the SVN password in renderer component or parent state after handing it to IPC.
+    creds.password = ''
+    setPassword('')
   }
 
   return (

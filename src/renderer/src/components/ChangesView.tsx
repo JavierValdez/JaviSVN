@@ -22,7 +22,8 @@ const STATUS_LABEL: Record<string, string> = {
   '?': 'Sin versionar',
   C: 'Conflicto',
   '!': 'Faltante',
-  R: 'Reemplazado'
+  R: 'Reemplazado',
+  I: 'Incompleto'
 }
 
 const STATUS_CLASS: Record<string, string> = {
@@ -32,7 +33,8 @@ const STATUS_CLASS: Record<string, string> = {
   '?': 'status-question',
   C: 'status-C',
   R: 'status-R',
-  '!': 'status-D'
+  '!': 'status-D',
+  I: 'status-I'
 }
 
 const STATUS_ICON: Record<string, string> = {
@@ -42,7 +44,12 @@ const STATUS_ICON: Record<string, string> = {
   '?': '📄',
   C: '⚠️',
   R: '🔁',
-  '!': '❗'
+  '!': '❗',
+  I: '⚠️'
+}
+
+function isSelectableChange(change: FileChange): boolean {
+  return change.status !== 'I'
 }
 
 function normalizeError(err: unknown, fallback: string): string {
@@ -102,13 +109,14 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   // Preserve the current working state when the change list refreshes.
   useEffect(() => {
     const currentPaths = new Set(changes.map((change) => change.path))
+    const selectablePaths = new Set(changes.filter(isSelectableChange).map((change) => change.path))
 
     setChecked((prev) => {
       if (!didSeedChecksRef.current && changes.length > 0) {
         didSeedChecksRef.current = true
         const initial = new Set<string>()
         changes.forEach((change) => {
-          if (change.status !== '?') initial.add(change.path)
+          if (change.status !== '?' && isSelectableChange(change)) initial.add(change.path)
         })
         return initial
       }
@@ -116,7 +124,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
       if (prev.size === 0) return prev
       const next = new Set<string>()
       prev.forEach((path) => {
-        if (currentPaths.has(path)) next.add(path)
+        if (currentPaths.has(path) && selectablePaths.has(path)) next.add(path)
       })
       return next.size === prev.size ? prev : next
     })
@@ -193,6 +201,13 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   const loadDiff = async (filePath: string) => {
     setSelectedFile(filePath)
     const current = changes.find((c) => c.path === filePath)
+    if (current?.status === 'I') {
+      setPdfPreview(null)
+      setDiff('La working copy quedó incompleta o bloqueada. Usa Reparar working copy para ejecutar cleanup y completar la actualización.')
+      setDiffLoading(false)
+      return
+    }
+
     if (current && isPreviewableFile(filePath) && current.status !== 'D' && current.status !== '!') {
       setDiff('')
       setDiffLoading(false)
@@ -222,6 +237,9 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   }
 
   const toggleCheck = (path: string) => {
+    const change = changes.find((c) => c.path === path)
+    if (change && !isSelectableChange(change)) return
+
     setChecked((prev) => {
       const next = new Set(prev)
       if (next.has(path)) next.delete(path)
@@ -231,10 +249,11 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   }
 
   const toggleAll = () => {
-    if (checked.size === changes.length) {
+    const selectablePaths = changes.filter(isSelectableChange).map((c) => c.path)
+    if (checked.size === selectablePaths.length && selectablePaths.length > 0) {
       setChecked(new Set())
     } else {
-      setChecked(new Set(changes.map((c) => c.path)))
+      setChecked(new Set(selectablePaths))
     }
   }
 
@@ -243,7 +262,10 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
       toast('Escribe un mensaje de commit', 'error')
       return
     }
-    const files = [...checked]
+    const files = [...checked].filter((path) => {
+      const change = changes.find((c) => c.path === path)
+      return change ? isSelectableChange(change) : true
+    })
     if (files.length === 0) {
       toast('Selecciona al menos un archivo', 'error')
       return
@@ -263,7 +285,10 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   }
 
   const handleRevert = async (file?: string) => {
-    const files = file ? [file] : [...checked]
+    const files = (file ? [file] : [...checked]).filter((path) => {
+      const change = changes.find((c) => c.path === path)
+      return change ? isSelectableChange(change) : true
+    })
     if (files.length === 0) return
     if (!confirm(`¿Revertir ${files.length} archivo(s)? Se perderán los cambios.`)) return
     setReverting(true)
@@ -364,8 +389,8 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     const { change, top, left } = changeMenu
     const isUnversioned = change.status === '?'
     const isNestedPath = change.path.includes('/')
-    const canOpen = !['D', '!'].includes(change.status)
-    const canRevertSingle = change.status !== '?'
+    const canOpen = !['D', '!', 'I'].includes(change.status)
+    const canRevertSingle = change.status !== '?' && isSelectableChange(change)
 
     return createPortal(
       <div
@@ -462,13 +487,14 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
     )
   }
 
+  const selectableChanges = changes.filter(isSelectableChange)
   const sortedChanges = [...changes].sort((a, b) => {
-    const order: Record<string, number> = { C: 0, M: 1, A: 2, R: 3, D: 4, '!': 5, '?': 6 }
+    const order: Record<string, number> = { I: 0, C: 1, M: 2, A: 3, R: 4, D: 5, '!': 6, '?': 7 }
     return (order[a.status] ?? 9) - (order[b.status] ?? 9)
   })
 
-  const canShowBlame = selectedChange ? !['?', 'A', 'D', '!', 'C'].includes(selectedChange.status) : false
-  const canPreviewFile = Boolean(selectedChange && isPreviewableFile(selectedChange.path) && !['D', '!'].includes(selectedChange.status))
+  const canShowBlame = selectedChange ? !['?', 'A', 'D', '!', 'C', 'I'].includes(selectedChange.status) : false
+  const canPreviewFile = Boolean(selectedChange && isPreviewableFile(selectedChange.path) && !['D', '!', 'I'].includes(selectedChange.status))
   const showInitialLoading = loading && changes.length === 0
 
   return (
@@ -480,8 +506,9 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input
               type="checkbox"
-              checked={checked.size === changes.length && changes.length > 0}
+              checked={checked.size === selectableChanges.length && selectableChanges.length > 0}
               onChange={toggleAll}
+              disabled={selectableChanges.length === 0}
             />
             {changes.length} {changes.length === 1 ? 'archivo' : 'archivos'}
           </label>
@@ -537,6 +564,7 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
                     checked={checked.has(c.path)}
                     onChange={() => toggleCheck(c.path)}
                     onClick={(e) => e.stopPropagation()}
+                    disabled={!isSelectableChange(c)}
                   />
                   <span className={`change-status ${STATUS_CLASS[c.status] || ''}`}>
                     {c.status}

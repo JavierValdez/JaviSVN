@@ -35,10 +35,12 @@ export interface EditorOption {
 
 export interface FileChange {
   path: string
-  status: 'M' | 'A' | 'D' | '?' | 'C' | '!' | 'R'
+  status: 'M' | 'A' | 'D' | '?' | 'C' | '!' | 'R' | 'I'
   checked: boolean
   displayPath: string
   kind: 'file' | 'dir'
+  rawStatus?: string
+  wcLocked?: boolean
 }
 
 export interface BlameLine {

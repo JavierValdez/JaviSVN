@@ -77,6 +77,7 @@ const svnAPI = {
   checkout: (url: string, targetName: string) =>
     ipcRenderer.invoke('svn:checkout', url, targetName),
   update: (repoPath: string) => ipcRenderer.invoke('svn:update', repoPath),
+  cleanup: (repoPath: string) => ipcRenderer.invoke('svn:cleanup', repoPath),
   status: (repoPath: string) => ipcRenderer.invoke('svn:status', repoPath),
   diff: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:diff', repoPath, filePath),
   fileContent: (repoPath: string, filePath: string) => ipcRenderer.invoke('svn:fileContent', repoPath, filePath),

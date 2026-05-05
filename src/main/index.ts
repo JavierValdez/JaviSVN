@@ -247,6 +247,18 @@ function toRepoRelativeArg(relPath: string): string {
   return normalizeRelativePath(relPath) || '.'
 }
 
+type LocalChangeStatus = 'M' | 'A' | 'D' | '?' | 'C' | '!' | 'R' | 'I'
+
+interface LocalStatusChange {
+  path: string
+  displayPath: string
+  status: LocalChangeStatus
+  checked: boolean
+  kind: 'file' | 'dir'
+  rawStatus: string
+  wcLocked: boolean
+}
+
 function getParentRelativePath(relPath: string): string {
   const normalized = normalizeRelativePath(relPath)
   if (!normalized) return ''
@@ -1266,11 +1278,7 @@ ipcMain.handle('repos:list', async () => {
         try {
           const { stdout: st } = await runSvn(['status', '--xml', fullPath])
           const sp = await parseXml(st)
-          const target = sp.status?.target
-          if (target?.entry) {
-            const entries2 = Array.isArray(target.entry) ? target.entry : [target.entry]
-            changesCount = entries2.length
-          }
+          changesCount = buildStatusChangesFromParsed(sp, fullPath).length
         } catch {}
 
         results.push({
@@ -1711,42 +1719,95 @@ ipcMain.handle('svn:update', async (event, repoPath: string) => {
   }
 })
 
-// ─── IPC: SVN Status ─────────────────────────────────────────────────────────
-ipcMain.handle('svn:status', async (_e, repoPath: string) => {
-  const { stdout } = await runSvn(['status', '--xml'], { cwd: repoPath })
-  const parsed = await parseXml(stdout)
+ipcMain.handle('svn:cleanup', async (_e, repoPath: string) => {
+  try {
+    const { stdout, stderr } = await runSvn(['cleanup', '.'], {
+      cwd: repoPath,
+      skipAuth: true,
+      timeoutMs: 5 * 60 * 1000
+    })
+    return { success: true, output: stdout || stderr }
+  } catch (err: any) {
+    const msg = String(err?.message || '').trim()
+    throw new Error(msg || 'No se pudo limpiar la working copy')
+  }
+})
+
+function normalizeStatusEntryPath(repoPath: string, entryPath: string): string {
+  const rawPath = String(entryPath || '.').replace(/\\/g, '/')
+  if (!rawPath || rawPath === '.') return '.'
+
+  if (isAbsolute(rawPath)) {
+    const rel = relative(resolve(repoPath), rawPath).replace(/\\/g, '/')
+    return normalizeRelativePath(rel) || '.'
+  }
+
+  return normalizeRelativePath(rawPath) || '.'
+}
+
+function detectStatusEntryKind(repoPath: string, relPath: string): 'file' | 'dir' {
+  try {
+    const abs = relPath === '.' ? resolve(repoPath) : resolve(repoPath, relPath)
+    return existsSync(abs) && statSync(abs).isDirectory() ? 'dir' : 'file'
+  } catch {
+    return 'file'
+  }
+}
+
+function mapStatus(item: string, props = 'none'): LocalChangeStatus | null {
+  const safeItem = String(item || 'normal')
+  const safeProps = String(props || 'none')
+
+  if (safeItem === 'normal') {
+    if (safeProps === 'modified') return 'M'
+    if (safeProps === 'conflicted') return 'C'
+    return null
+  }
+
+  const map: Record<string, LocalChangeStatus> = {
+    modified: 'M',
+    merged: 'M',
+    added: 'A',
+    deleted: 'D',
+    unversioned: '?',
+    conflicted: 'C',
+    missing: '!',
+    obstructed: '!',
+    replaced: 'R',
+    incomplete: 'I'
+  }
+
+  if (safeItem === 'none' || safeItem === 'ignored' || safeItem === 'external') return null
+  return map[safeItem] || '?'
+}
+
+function buildStatusChangesFromParsed(parsed: any, repoPath: string): LocalStatusChange[] {
   const target = parsed.status?.target
   if (!target?.entry) return []
 
-  const detectEntryKind = (relPath: string): 'file' | 'dir' => {
-    try {
-      const abs = resolve(repoPath, relPath)
-      return existsSync(abs) && statSync(abs).isDirectory() ? 'dir' : 'file'
-    } catch {
-      return 'file'
-    }
-  }
-
   const entries = Array.isArray(target.entry) ? target.entry : [target.entry]
-  const baseChanges = entries.map((e: any) => {
-    const item = e['wc-status']?.$?.item || '?'
-    const path = String(e.$?.path || '').replace(/\\/g, '/')
-    return {
+  const baseChanges: LocalStatusChange[] = []
+
+  for (const e of entries) {
+    const wcStatus = e['wc-status']?.$ || {}
+    const item = String(wcStatus.item || 'normal')
+    const props = String(wcStatus.props || 'none')
+    const status = mapStatus(item, props)
+    if (!status) continue
+
+    const path = normalizeStatusEntryPath(repoPath, e.$?.path)
+    baseChanges.push({
       path,
       displayPath: path,
-      status: mapStatus(item),
-      checked: item !== '?',
-      kind: detectEntryKind(path)
-    }
-  })
+      status,
+      checked: status !== '?' && status !== 'I',
+      kind: detectStatusEntryKind(repoPath, path),
+      rawStatus: item,
+      wcLocked: String(wcStatus['wc-locked'] || '') === 'true'
+    })
+  }
 
-  const expandedFromUnversionedDirs: Array<{
-    path: string
-    displayPath: string
-    status: string
-    checked: boolean
-    kind: 'file' | 'dir'
-  }> = []
+  const expandedFromUnversionedDirs: LocalStatusChange[] = []
 
   const walkUnversionedDir = (absDir: string, relDir: string) => {
     try {
@@ -1754,7 +1815,7 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
         if (child.name === '.svn') continue
 
         const childAbs = join(absDir, child.name)
-        const childRel = join(relDir, child.name).replace(/\\/g, '/')
+        const childRel = join(relDir === '.' ? '' : relDir, child.name).replace(/\\/g, '/')
 
         if (child.isDirectory?.()) {
           expandedFromUnversionedDirs.push({
@@ -1762,7 +1823,9 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
             displayPath: childRel,
             status: '?',
             checked: false,
-            kind: 'dir'
+            kind: 'dir',
+            rawStatus: 'unversioned',
+            wcLocked: false
           })
           walkUnversionedDir(childAbs, childRel)
         } else {
@@ -1771,7 +1834,9 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
             displayPath: childRel,
             status: '?',
             checked: false,
-            kind: 'file'
+            kind: 'file',
+            rawStatus: 'unversioned',
+            wcLocked: false
           })
         }
       }
@@ -1783,30 +1848,29 @@ ipcMain.handle('svn:status', async (_e, repoPath: string) => {
   for (const change of baseChanges) {
     if (change.status !== '?') continue
 
-    const abs = resolve(repoPath, change.path)
+    const abs = change.path === '.' ? resolve(repoPath) : resolve(repoPath, change.path)
     try {
       const st = statSync(abs)
-      if (st.isDirectory()) {
-        walkUnversionedDir(abs, change.path)
-      }
+      if (st.isDirectory()) walkUnversionedDir(abs, change.path)
     } catch {
       // ignore invalid paths
     }
   }
 
-  const merged = new Map<string, {
-    path: string
-    displayPath: string
-    status: string
-    checked: boolean
-    kind: 'file' | 'dir'
-  }>()
+  const merged = new Map<string, LocalStatusChange>()
   for (const c of baseChanges) merged.set(c.path, c)
   for (const c of expandedFromUnversionedDirs) {
     if (!merged.has(c.path)) merged.set(c.path, c)
   }
 
   return Array.from(merged.values())
+}
+
+// ─── IPC: SVN Status ─────────────────────────────────────────────────────────
+ipcMain.handle('svn:status', async (_e, repoPath: string) => {
+  const { stdout } = await runSvn(['status', '--xml'], { cwd: repoPath })
+  const parsed = await parseXml(stdout)
+  return buildStatusChangesFromParsed(parsed, repoPath)
 })
 
 // ─── IPC: Local file content (for unversioned preview) ──────────────────────
@@ -1873,19 +1937,6 @@ ipcMain.handle('svn:getConflictContent', async (_e, repoPath: string, filePath: 
 
   return { mine, base, theirs }
 })
-
-function mapStatus(item: string): string {
-  const map: Record<string, string> = {
-    modified: 'M',
-    added: 'A',
-    deleted: 'D',
-    unversioned: '?',
-    conflicted: 'C',
-    missing: '!',
-    replaced: 'R'
-  }
-  return map[item] || item[0]?.toUpperCase() || '?'
-}
 
 // ─── IPC: SVN Diff ───────────────────────────────────────────────────────────
 ipcMain.handle('svn:diff', async (_e, repoPath: string, filePath: string) => {

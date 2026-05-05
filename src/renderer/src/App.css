@@ -474,6 +474,7 @@ body { overflow: hidden; }
 .status-question { color: var(--text3); }
 .status-C { color: var(--danger); }
 .status-R { color: var(--accent); }
+.status-I { color: var(--warning); }
 
 .change-path {
   flex: 1;
@@ -579,6 +580,7 @@ body { overflow: hidden; }
 .diff-status-chip.status-question { color: var(--text2); }
 .diff-status-chip.status-C { color: var(--danger); }
 .diff-status-chip.status-R { color: var(--accent); }
+.diff-status-chip.status-I { color: var(--warning); }
 
 .diff-empty {
   display: flex;

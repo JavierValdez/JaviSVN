@@ -59,6 +59,7 @@ declare global {
       setBinPath: (binPath: string) => Promise<{ bin: string; version: string | null }>
       checkout: (url: string, targetName: string) => Promise<any>
       update: (repoPath: string) => Promise<any>
+      cleanup: (repoPath: string) => Promise<any>
       status: (repoPath: string) => Promise<FileChange[]>
       diff: (repoPath: string, filePath: string) => Promise<string>
       fileContent: (repoPath: string, filePath: string) => Promise<string>
@@ -144,6 +145,7 @@ export default function App() {
   const selectedRepoPathRef = useRef<string | null>(null)
   const changesSignatureRef = useRef('')
   const loadChangesRequestIdRef = useRef(0)
+  const hasIncompleteWorkingCopy = changes.some((change) => change.status === 'I')
 
   selectedRepoPathRef.current = selectedRepo?.path || null
   changesSignatureRef.current = buildChangesSignature(changes)
@@ -277,6 +279,36 @@ export default function App() {
       await refreshRepos()
     } catch (err: any) {
       toast(err.message || 'Error al actualizar', 'error')
+    } finally {
+      unsub()
+      setUpdating(false)
+      setShowUpdateProgress(false)
+    }
+  }
+
+  const handleRepairWorkingCopy = async () => {
+    if (!selectedRepo) return
+    if (!confirm('La working copy está incompleta o bloqueada. Ejecuta la reparación solo si no hay otro cliente SVN usando esta carpeta.')) return
+
+    setUpdating(true)
+    setUpdateLog('Ejecutando svn cleanup...\n')
+    setShowUpdateProgress(true)
+
+    const unsub = window.svn.onUpdateProgress((msg) => {
+      setUpdateLog((prev) => prev + msg)
+    })
+
+    try {
+      await window.svn.cleanup(selectedRepo.path)
+      setUpdateLog((prev) => `${prev}Ejecutando svn update...\n`)
+      await window.svn.update(selectedRepo.path)
+      toast('Working copy reparada correctamente', 'success')
+      await loadChanges({ silent: true })
+      await refreshRepos()
+    } catch (err: any) {
+      toast(err.message || 'No se pudo reparar la working copy', 'error')
+      await loadChanges({ silent: true })
+      await refreshRepos()
     } finally {
       unsub()
       setUpdating(false)
@@ -593,6 +625,16 @@ export default function App() {
                 >
                   📂 Abrir carpeta
                 </button>
+                {hasIncompleteWorkingCopy && (
+                  <button
+                    className="btn btn-default"
+                    onClick={handleRepairWorkingCopy}
+                    disabled={updating}
+                    title="Ejecutar svn cleanup y luego svn update"
+                  >
+                    🧹 Reparar working copy
+                  </button>
+                )}
                 <button
                   className="btn btn-primary"
                   onClick={handleUpdate}

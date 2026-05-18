@@ -175,14 +175,35 @@ const appUpdateAPI = {
   }
 }
 
+const agentIntegrationAPI = {
+  getState: () => ipcRenderer.invoke('agentIntegration:getState'),
+  setEnabled: (enabled: boolean) => ipcRenderer.invoke('agentIntegration:setEnabled', enabled),
+  getClientConfig: () => ipcRenderer.invoke('agentIntegration:getClientConfig'),
+  regenerateToken: () => ipcRenderer.invoke('agentIntegration:regenerateToken'),
+  getActivity: () => ipcRenderer.invoke('agentIntegration:getActivity'),
+  clearActivity: () => ipcRenderer.invoke('agentIntegration:clearActivity'),
+  onState: (cb: (state: any) => void) => {
+    const handler = (_: any, state: any) => cb(state)
+    ipcRenderer.on('agentIntegration:state', handler)
+    return () => ipcRenderer.removeListener('agentIntegration:state', handler)
+  },
+  onActivity: (cb: (activity: any[]) => void) => {
+    const handler = (_: any, activity: any[]) => cb(activity)
+    ipcRenderer.on('agentIntegration:activity', handler)
+    return () => ipcRenderer.removeListener('agentIntegration:activity', handler)
+  }
+}
+
 if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('appUpdate', appUpdateAPI)
+    contextBridge.exposeInMainWorld('agentIntegration', agentIntegrationAPI)
   } catch (error) {
     console.error(error)
   }
 } else {
   ;(globalThis as any).appUpdate = appUpdateAPI
+  ;(globalThis as any).agentIntegration = agentIntegrationAPI
 }
 
 if (process.contextIsolated) {

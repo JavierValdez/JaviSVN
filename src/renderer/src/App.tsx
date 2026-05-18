@@ -1,11 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { ActiveTab, BlameLine, ConflictAccept, ConflictContent, Credentials, EditorId, EditorOption, FileChange, LocalRepo, RemoteServer } from './types/svn'
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react'
+import { ActiveTab, AgentActivityEntry, AgentClientConfig, AgentIntegrationState, BlameLine, ConflictAccept, ConflictContent, Credentials, EditorId, EditorOption, FileChange, LocalRepo, RemoteServer } from './types/svn'
 import Sidebar from './components/Sidebar'
 import ChangesView from './components/ChangesView'
 import ExplorerView from './components/ExplorerView'
 import HistoryView from './components/HistoryView'
 import AuthDialog from './components/AuthDialog'
 import ProfileDialog from './components/ProfileDialog'
+import AgentIntegrationDialog from './components/AgentIntegrationDialog'
+import VerticalResizeHandle from './components/VerticalResizeHandle'
+import { useResizablePanel } from './hooks/useResizablePanel'
 
 export interface AppUpdateState {
   stage: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error' | 'unsupported'
@@ -99,6 +102,16 @@ declare global {
       download: () => Promise<void>
       onState: (cb: (state: { stage: string; latestVersion?: string; downloadUrl?: string }) => void) => () => void
     }
+    agentIntegration: {
+      getState: () => Promise<AgentIntegrationState>
+      setEnabled: (enabled: boolean) => Promise<AgentIntegrationState>
+      getClientConfig: () => Promise<AgentClientConfig>
+      regenerateToken: () => Promise<AgentIntegrationState>
+      getActivity: () => Promise<AgentActivityEntry[]>
+      clearActivity: () => Promise<AgentActivityEntry[]>
+      onState: (cb: (state: AgentIntegrationState) => void) => () => void
+      onActivity: (cb: (activity: AgentActivityEntry[]) => void) => () => void
+    }
   }
 }
 
@@ -141,10 +154,23 @@ export default function App() {
   const [availableEditors, setAvailableEditors] = useState<EditorOption[]>([])
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
   const [showProfileDialog, setShowProfileDialog] = useState(false)
+  const [showAgentIntegrationDialog, setShowAgentIntegrationDialog] = useState(false)
   const [authErrorDetected, setAuthErrorDetected] = useState(false)
   const selectedRepoPathRef = useRef<string | null>(null)
   const changesSignatureRef = useRef('')
   const loadChangesRequestIdRef = useRef(0)
+  const {
+    containerRef: appBodyRef,
+    width: sidebarWidth,
+    isResizing: isSidebarResizing,
+    resizeHandleProps: sidebarResizeHandleProps
+  } = useResizablePanel<HTMLDivElement>({
+    storageKey: 'layout.sidebarWidth',
+    defaultWidth: 260,
+    minWidth: 220,
+    maxWidth: 420,
+    minRemainingWidth: 520
+  })
   const hasIncompleteWorkingCopy = changes.some((change) => change.status === 'I')
 
   selectedRepoPathRef.current = selectedRepo?.path || null
@@ -576,7 +602,11 @@ export default function App() {
         </div>
       </div>
 
-      <div className="app-body">
+      <div
+        className="app-body"
+        ref={appBodyRef}
+        style={{ '--sidebar-w': `${sidebarWidth}px` } as CSSProperties}
+      >
         {/* Sidebar */}
         <Sidebar
           repos={localRepos}
@@ -596,6 +626,15 @@ export default function App() {
           onDeleteRemote={handleDeleteRemote}
           onRenameRemote={handleRenameRemote}
           onOpenProfile={() => setShowProfileDialog(true)}
+          onOpenAgentIntegration={() => setShowAgentIntegrationDialog(true)}
+        />
+        <VerticalResizeHandle
+          active={isSidebarResizing}
+          label="Ajustar ancho de la barra lateral"
+          valueNow={sidebarWidth}
+          valueMin={220}
+          valueMax={420}
+          {...sidebarResizeHandleProps}
         />
 
         {/* Main area */}
@@ -733,6 +772,13 @@ export default function App() {
             setAuthErrorDetected(false)
           }}
           authError={authErrorDetected}
+        />
+      )}
+
+      {showAgentIntegrationDialog && (
+        <AgentIntegrationDialog
+          onClose={() => setShowAgentIntegrationDialog(false)}
+          toast={toast}
         />
       )}
 

@@ -5,7 +5,9 @@ import DiffViewer from './DiffViewer'
 import BlameView from './BlameView'
 import ConflictResolver from './ConflictResolver'
 import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
+import VerticalResizeHandle from './VerticalResizeHandle'
 import { isWordFile, isPreviewableFile } from '../utils/fileTypes'
+import { useResizablePanel } from '../hooks/useResizablePanel'
 
 interface Props {
   repo: LocalRepo
@@ -84,6 +86,18 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
   const [actionPath, setActionPath] = useState<string | null>(null)
   const changeMenuRef = useRef<HTMLDivElement | null>(null)
   const didSeedChecksRef = useRef(false)
+  const {
+    containerRef: layoutRef,
+    width: listPanelWidth,
+    isResizing: isListPanelResizing,
+    resizeHandleProps: listPanelResizeHandleProps
+  } = useResizablePanel<HTMLDivElement>({
+    storageKey: 'layout.changesListWidth',
+    defaultWidth: 260,
+    minWidth: 220,
+    maxWidth: 560,
+    minRemainingWidth: 360
+  })
 
   const changesSignature = changes
     .map((c) => `${c.status}:${c.path}`)
@@ -499,9 +513,9 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
 
   return (
     <>
-      <div className="changes-layout">
+      <div className="changes-layout" ref={layoutRef}>
       {/* Left: file list */}
-      <div className="changes-list-panel">
+      <div className="changes-list-panel" style={{ width: listPanelWidth }}>
         <div className="changes-list-header">
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input
@@ -613,6 +627,15 @@ export default function ChangesView({ repo, changes, loading, onRefresh, toast }
           </button>
         </div>
       </div>
+
+      <VerticalResizeHandle
+        active={isListPanelResizing}
+        label="Ajustar ancho de la lista de cambios"
+        valueNow={listPanelWidth}
+        valueMin={220}
+        valueMax={560}
+        {...listPanelResizeHandleProps}
+      />
 
       {/* Right: diff viewer */}
       <div className="diff-panel">

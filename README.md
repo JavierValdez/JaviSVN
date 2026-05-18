@@ -64,6 +64,28 @@ xattr -cr /Applications/JaviSVN.app
 
 ---
 
+## Integración IA por MCP
+
+JaviSVN incluye una integración MCP local opcional para que agentes de IA puedan consultar remotos y working copies usando la configuración ya guardada en la app, sin compartir credenciales con el agente.
+
+1. Abre **Integración IA** desde el pie de la barra lateral.
+2. Activa la integración.
+3. Copia la configuración MCP generada por la app en tu cliente compatible.
+4. Mantén JaviSVN disponible; si el cliente inicia el MCP con la app cerrada, JaviSVN se abrirá automáticamente.
+
+La integración expone operaciones de lectura y una operación local controlada:
+
+- catálogo de remotos y repos locales
+- `status`, `diff`, `log`, `blame` e `info` locales
+- listado, búsqueda, contenido, historial, root URL e `info` remoto, con lectura histórica opcional por revisión
+- `checkout_remote` para crear una working copy local bajo confirmación visible del usuario
+- `update_local_repo` para actualizar una working copy local bajo confirmación visible del usuario
+- resources MCP para remotos, repos y estado de repos locales
+
+Las URLs remotas libres usan la credencial actualmente configurada en JaviSVN y no aceptan credenciales embebidas.
+
+---
+
 ## Comandos útiles
 
 ```bash
@@ -92,10 +114,12 @@ npx tsc -p tsconfig.node.json --noEmit
 ```text
 src/
 ├── main/
-│   ├── index.ts        # IPC handlers, integración SVN CLI, búsquedas, release/update helpers
+│   ├── index.ts        # IPC handlers, flujos mutables y arranque Electron
+│   ├── agent/          # broker local, modo MCP stdio y auditoría
+│   ├── services/       # store, runtime SVN y operaciones de lectura reutilizables
 │   └── updater.ts      # Consulta de releases de GitHub y estado de actualización
 ├── preload/
-│   └── index.ts        # Bridge seguro: window.svn y window.appUpdate
+│   └── index.ts        # Bridges seguros: window.svn, window.appUpdate y window.agentIntegration
 └── renderer/src/
     ├── App.tsx
     ├── App.css

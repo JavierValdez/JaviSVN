@@ -20,6 +20,7 @@ interface Props {
   onDeleteRemote: (remote: RemoteServer) => void
   onRenameRemote: (remote: RemoteServer) => void
   onOpenProfile: () => void
+  onOpenAgentIntegration: () => void
 }
 
 function timeAgo(dateStr: string): string {
@@ -50,7 +51,8 @@ export default function Sidebar({
   onOpenInEditor,
   onDeleteRemote,
   onRenameRemote,
-  onOpenProfile
+  onOpenProfile,
+  onOpenAgentIntegration
 }: Props) {
   const [openMenuPath, setOpenMenuPath] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
@@ -255,17 +257,20 @@ export default function Sidebar({
 
       {/* Profile footer */}
       <div className="sidebar-footer">
+        <button
+          className="sidebar-footer-btn"
+          style={{
+            marginBottom: 4
+          }}
+          onClick={onOpenAgentIntegration}
+          title="Integración IA"
+        >
+          <span>◎</span>
+          <span>Integración IA</span>
+        </button>
         {credentials?.username ? (
           <button
-            className="btn btn-ghost"
-            style={{
-              width: '100%',
-              justifyContent: 'flex-start',
-              gap: 8,
-              padding: '6px 10px',
-              fontSize: 12,
-              color: 'var(--sidebar-text)'
-            }}
+            className="sidebar-footer-btn"
             onClick={onOpenProfile}
             title="Cambiar usuario o contrasena"
           >
@@ -276,15 +281,7 @@ export default function Sidebar({
           </button>
         ) : (
           <button
-            className="btn btn-ghost"
-            style={{
-              width: '100%',
-              justifyContent: 'flex-start',
-              gap: 8,
-              padding: '6px 10px',
-              fontSize: 12,
-              color: 'var(--sidebar-muted)'
-            }}
+            className="sidebar-footer-btn muted"
             onClick={onOpenProfile}
           >
             <span>⚠️</span>

@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react'
 import { LocalRepo, LogEntry } from '../types/svn'
 import DiffViewer from './DiffViewer'
 import PdfPreviewDialog, { PdfPreviewState } from './PdfPreviewDialog'
+import VerticalResizeHandle from './VerticalResizeHandle'
 import { isWordFile, isPreviewableFile } from '../utils/fileTypes'
 import { formatClipboardText } from '../utils/clipboard'
+import { useResizablePanel } from '../hooks/useResizablePanel'
 
 interface Props {
   repo: LocalRepo
@@ -66,6 +68,18 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
   const [repoInfo, setRepoInfo] = useState<{ url: string; rootUrl: string } | null>(null)
   const [pdfPreview, setPdfPreview] = useState<PdfPreviewState | null>(null)
   const [restoringKey, setRestoringKey] = useState<string | null>(null)
+  const {
+    containerRef: layoutRef,
+    width: historyListWidth,
+    isResizing: isHistoryListResizing,
+    resizeHandleProps: historyListResizeHandleProps
+  } = useResizablePanel<HTMLDivElement>({
+    storageKey: 'layout.historyListWidth',
+    defaultWidth: 340,
+    minWidth: 260,
+    maxWidth: 620,
+    minRemainingWidth: 420
+  })
 
   useEffect(() => {
     setFileDiff(null)
@@ -213,9 +227,9 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
   }
 
   return (
-    <div className="history-layout">
+    <div className="history-layout" ref={layoutRef}>
       {/* Left: log list */}
-      <div className="history-list">
+      <div className="history-list" style={{ width: historyListWidth }}>
         <div className="changes-list-header">
           <span style={{ fontSize: 12, color: 'var(--text2)' }}>
             {log.length > 0 ? `${log.length} revisiones` : 'Historial'}
@@ -286,6 +300,15 @@ export default function HistoryView({ repo, toast, onWorkingCopyChanged }: Props
           </>
         )}
       </div>
+
+      <VerticalResizeHandle
+        active={isHistoryListResizing}
+        label="Ajustar ancho de la lista de historial"
+        valueNow={historyListWidth}
+        valueMin={260}
+        valueMax={620}
+        {...historyListResizeHandleProps}
+      />
 
       {/* Right: detail */}
       <div className="history-detail">

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
 import { setupAppUpdater } from './updater'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path'
@@ -7,6 +7,57 @@ import { spawn, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
 import { rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'os'
+import {
+  deleteRemote,
+  getCurrentServerUrl,
+  getStoredCredentials,
+  listRemotes,
+  renameRemote,
+  saveRemote,
+  selectRemote,
+  setCurrentServerUrl,
+  storeDelete,
+  writeStoredCredentials
+} from './services/store'
+import {
+  getSvnBin,
+  getSvnBinInfo,
+  runSvn,
+  setSvnBin,
+  buildInlineAuthArgs
+} from './services/svn-runtime'
+import {
+  BASE_REPO_PATH,
+  listLocalRepos as listLocalReposService,
+  listRemote as listRemoteService,
+  localBlame as localBlameService,
+  localDiff as localDiffService,
+  localFileContent as localFileContentService,
+  localLog as localLogService,
+  localRevisionFileDiff as localRevisionFileDiffService,
+  localStatus as localStatusService,
+  remoteFileContent as remoteFileContentService,
+  remoteLog as remoteLogService,
+  remoteRepoRoot as remoteRepoRootService,
+  remoteRevisionDiff as remoteRevisionDiffService,
+  searchRemote as searchRemoteService,
+  svnInfo as svnInfoService
+} from './services/read-ops'
+import {
+  checkoutRemoteToLocalRepo,
+  sanitizeLocalRepoName
+} from './services/checkout'
+import { updateLocalRepo } from './services/update'
+import {
+  clearAgentActivity,
+  getAgentClientConfig,
+  getAgentIntegrationPublicState,
+  regenerateAgentIntegrationPublicToken,
+  setAgentIntegrationPublicEnabled,
+  startAgentBrokerIfEnabled,
+  stopAgentBroker
+} from './agent/integration'
+import { runMcpServerMode } from './agent/mcp-server'
 
 const _require = createRequire(import.meta.url)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -14,28 +65,18 @@ const xml2js = _require('xml2js') as any
 const parseStringPromise = xml2js.parseStringPromise
 
 const isDev = process.env.NODE_ENV === 'development'
+const isMcpStdioMode = process.argv.includes('--mcp-stdio')
 
 // Set app name before ready so it shows correctly in the dock and menu bar
 app.name = 'JaviSVN'
-const DEFAULT_SERVER_URL = ''
-function getDefaultSvnCandidates(): string[] {
-  if (process.platform === 'win32') {
-    const pf   = process.env.ProgramFiles        || 'C:\\Program Files'
-    const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
-    return [
-      join(pf,   'TortoiseSVN', 'bin', 'svn.exe'),
-      join(pf86, 'TortoiseSVN', 'bin', 'svn.exe'),
-      join(pf,   'SlikSvn', 'bin', 'svn.exe'),
-      join(pf,   'CollabNet Subversion Client', 'svn.exe'),
-      'svn.exe',
-    ]
+
+if (isMcpStdioMode) {
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu')
+  app.commandLine.appendSwitch('disable-software-rasterizer')
+  if (process.platform === 'darwin') {
+    app.setActivationPolicy('accessory')
   }
-  return [
-    '/opt/homebrew/bin/svn',
-    '/usr/local/bin/svn',
-    '/usr/bin/svn',
-    '/opt/local/bin/svn',
-  ]
 }
 
 function getExtraPathSegments(): string {
@@ -47,163 +88,10 @@ function getExtraPathSegments(): string {
   return '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 }
 
-// ─── Simple JSON Store ────────────────────────────────────────────────────────
-function getStorePath(): string {
-  const userData = app.getPath('userData')
-  return join(userData, 'javisvn-config.json')
-}
-
-function readStore(): Record<string, any> {
-  try {
-    const data = readFileSync(getStorePath(), 'utf-8')
-    return JSON.parse(data)
-  } catch {
-    return {}
-  }
-}
-
-function writeStore(data: Record<string, any>): void {
-  writeFileSync(getStorePath(), JSON.stringify(data, null, 2), 'utf-8')
-}
-
-function storeGet(key: string): any {
-  return readStore()[key]
-}
-
-function storeSet(key: string, value: any): void {
-  const data = readStore()
-  data[key] = value
-  writeStore(data)
-}
-
-function storeDelete(key: string): void {
-  const data = readStore()
-  delete data[key]
-  writeStore(data)
-}
-
-interface StoredRemote {
-  id: string
-  name: string
-  url: string
-  createdAt: string
-}
-
-interface StoredRemotesState {
-  exists: boolean
-  remotes: StoredRemote[]
-}
-
-function encryptPassword(password: string): string {
-  if (!safeStorage.isEncryptionAvailable()) return password
-  return safeStorage.encryptString(password).toString('base64')
-}
-
-function decryptPassword(value: string): string {
-  if (!safeStorage.isEncryptionAvailable()) return value
-  try {
-    return safeStorage.decryptString(Buffer.from(value, 'base64'))
-  } catch {
-    return value // fallback: ya es texto plano (caso de migración)
-  }
-}
-
-function writeStoredCredentials(creds: { username: string; password: string; serverUrl: string }): void {
-  const passwordEncrypted = encryptPassword(creds.password)
-  storeSet('credentials', { username: creds.username, passwordEncrypted, serverUrl: creds.serverUrl })
-}
-
-function getStoredCredentials(): { username: string; password: string; serverUrl: string } | null {
-  const stored = storeGet('credentials')
-  if (!stored || typeof stored !== 'object') return null
-
-  let password: string
-  if (stored.passwordEncrypted) {
-    password = decryptPassword(stored.passwordEncrypted)
-  } else if (stored.password) {
-    // Migración automática: texto plano → cifrado
-    password = stored.password
-    writeStoredCredentials({ username: stored.username || '', password, serverUrl: stored.serverUrl || '' })
-  } else {
-    return null
-  }
-  return { username: stored.username || '', password, serverUrl: stored.serverUrl || '' }
-}
-
-function getCurrentServerUrl(): string {
-  const creds = getStoredCredentials()
-  return creds?.serverUrl || storeGet('serverUrl') || DEFAULT_SERVER_URL
-}
-
-function setCurrentServerUrl(url: string): void {
-  const nextUrl = (url || '').trim()
-  if (!nextUrl) return
-
-  const creds = getStoredCredentials()
-  if (creds && (creds.username || creds.password)) {
-    storeSet('credentials', { ...creds, serverUrl: nextUrl })
-  }
-  storeSet('serverUrl', nextUrl)
-}
-
-function clearCurrentServerUrl(): void {
-  const creds = getStoredCredentials()
-  if (creds) {
-    storeSet('credentials', { ...creds, serverUrl: '' })
-  }
-  storeSet('serverUrl', '')
-}
-
-function getStoredRemotesState(): StoredRemotesState {
-  const raw = storeGet('remoteServers')
-  if (!Array.isArray(raw)) return { exists: false, remotes: [] }
-
-  return {
-    exists: true,
-    remotes: raw
-    .filter((x: any) => x && typeof x === 'object' && x.id && x.name && x.url)
-    .map((x: any) => ({
-      id: String(x.id),
-      name: String(x.name),
-      url: String(x.url),
-      createdAt: String(x.createdAt || new Date().toISOString())
-    }))
-  }
-}
-
-function saveStoredRemotes(remotes: StoredRemote[]): void {
-  storeSet('remoteServers', remotes)
-}
-
-function ensureRemotesSeeded(): StoredRemote[] {
-  const { exists, remotes } = getStoredRemotesState()
-  if (exists) return remotes
-
-  const currentUrl = getCurrentServerUrl().trim()
-  if (!currentUrl) {
-    saveStoredRemotes([])
-    return []
-  }
-
-  const seeded: StoredRemote[] = [{
-    id: `remote-${Date.now()}`,
-    name: 'Servidor principal',
-    url: currentUrl,
-    createdAt: new Date().toISOString()
-  }]
-  saveStoredRemotes(seeded)
-  return seeded
-}
-
 // ─── Store & Paths ────────────────────────────────────────────────────────────
-const BASE_REPO_PATH = join(homedir(), 'Documents', 'JaviSvn')
 
 if (!existsSync(BASE_REPO_PATH)) {
   mkdirSync(BASE_REPO_PATH, { recursive: true })
-}
-
-function normalizeRepoUrl(url: string): string {
-  return String(url || '').trim().replace(/\/+$/g, '')
 }
 
 function escapeRegExp(value: string): string {
@@ -245,18 +133,6 @@ function normalizeRelativePath(input: string): string {
 
 function toRepoRelativeArg(relPath: string): string {
   return normalizeRelativePath(relPath) || '.'
-}
-
-type LocalChangeStatus = 'M' | 'A' | 'D' | '?' | 'C' | '!' | 'R' | 'I'
-
-interface LocalStatusChange {
-  path: string
-  displayPath: string
-  status: LocalChangeStatus
-  checked: boolean
-  kind: 'file' | 'dir'
-  rawStatus: string
-  wcLocked: boolean
 }
 
 function getParentRelativePath(relPath: string): string {
@@ -487,57 +363,6 @@ function buildLocalRepoDeleteError(repoPath: string, error: unknown): Error {
   return new Error(`No se pudo eliminar la copia local "${repoName}".`)
 }
 
-function sanitizeLocalRepoName(targetName: string): string {
-  const safeName = String(targetName || '').trim()
-  if (!safeName) throw new Error('El nombre del directorio local es requerido')
-  if (safeName === '.' || safeName === '..') {
-    throw new Error('Nombre de directorio inválido')
-  }
-  if (/[<>:"/\\|?*\u0000-\u001f]/.test(safeName)) {
-    throw new Error('El nombre del directorio local contiene caracteres no permitidos')
-  }
-  return safeName
-}
-
-let localRepoUrlIndexCache: { expiresAt: number; map: Map<string, string> } | null = null
-
-function invalidateLocalRepoUrlIndexCache(): void {
-  localRepoUrlIndexCache = null
-}
-
-async function getLocalRepoUrlIndex(): Promise<Map<string, string>> {
-  if (localRepoUrlIndexCache && localRepoUrlIndexCache.expiresAt > Date.now()) {
-    return new Map(localRepoUrlIndexCache.map)
-  }
-
-  const index = new Map<string, string>()
-  if (!existsSync(BASE_REPO_PATH)) return index
-
-  const entries = readdirSync(BASE_REPO_PATH)
-  for (const entry of entries) {
-    const fullPath = join(BASE_REPO_PATH, entry)
-    try {
-      const stat = statSync(fullPath)
-      if (!stat.isDirectory()) continue
-      if (!existsSync(join(fullPath, '.svn'))) continue
-
-      const { stdout } = await runSvn(['info', '--xml', fullPath])
-      const parsed = await parseXml(stdout)
-      const repoUrl = normalizeRepoUrl(parsed.info?.entry?.url || '')
-      if (repoUrl) index.set(repoUrl, fullPath)
-    } catch {
-      // ignore invalid working copies
-    }
-  }
-
-  localRepoUrlIndexCache = {
-    expiresAt: Date.now() + 5000,
-    map: index
-  }
-
-  return new Map(index)
-}
-
 // ─── Find svn binary ─────────────────────────────────────────────────────────
 function buildEnvWithExtraPath(): NodeJS.ProcessEnv {
   const sep = process.platform === 'win32' ? ';' : ':'
@@ -548,60 +373,6 @@ function buildEnvWithExtraPath(): NodeJS.ProcessEnv {
   const merged = (firstSegment && current.includes(firstSegment)) ? current : `${extra}${sep}${current}`
   return { ...process.env, [pathKey]: merged, PATH: merged }
 }
-
-function canExecuteSvn(bin: string): boolean {
-  try {
-    const result = spawnSync(bin, ['--version', '--quiet'], {
-      env: { ...buildEnvWithExtraPath(), LANG: 'en_US.UTF-8' },
-      encoding: 'utf-8',
-      timeout: 4000
-    })
-    if (result.error) return false
-    return result.status === 0 && Boolean((result.stdout || '').trim())
-  } catch {
-    return false
-  }
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.filter((v) => Boolean(v && v.trim())))]
-}
-
-function findSvnBin(preferred?: string): string {
-  const ext = process.platform === 'win32' ? '.exe' : ''
-  const fallback = `svn${ext}`
-  // 1. Bundled binary (packaged app: Contents/Resources/bin/svn[.exe])
-  const bundledPackaged = join(process.resourcesPath || '', 'bin', `svn${ext}`)
-  // 2. Bundled binary (dev mode: project/resources/bin/svn[.exe])
-  const bundledDev = join(__dirname, `../../resources/bin/svn${ext}`)
-
-  const preferredValues = [preferred || '', process.env.JAVISVN_SVN_BIN || '']
-
-  // For distributed app, prefer embedded SVN to avoid external dependencies.
-  // For dev, prefer system SVN first to avoid local packaged-binary issues.
-  const candidates = app.isPackaged
-    ? uniqueStrings([
-      ...preferredValues,
-      bundledPackaged,
-      bundledDev,
-      ...getDefaultSvnCandidates(),
-      fallback
-    ])
-    : uniqueStrings([
-      ...preferredValues,
-      ...getDefaultSvnCandidates(),
-      bundledPackaged,
-      bundledDev,
-      fallback
-    ])
-
-  for (const c of candidates) {
-    if (c !== fallback && !existsSync(c)) continue
-    if (canExecuteSvn(c)) return c
-  }
-  return fallback
-}
-let SVN_BIN = findSvnBin((storeGet('svnBinPath') || '').toString())
 
 type SupportedEditorId = 'vscode' | 'vscode-insiders'
 
@@ -873,6 +644,7 @@ function setupApplicationMenu(): void {
 }
 
 app.whenReady().then(() => {
+  if (isMcpStdioMode) return
   if (process.platform === 'win32') app.setAppUserModelId('com.javisvn.app')
 
   // Set dock icon in dev mode (in production the .icns in the bundle is used automatically)
@@ -883,11 +655,19 @@ app.whenReady().then(() => {
 
   setupApplicationMenu()
   setupDockMenu()
+  void startAgentBrokerIfEnabled()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
+
+if (isMcpStdioMode) {
+  void runMcpServerMode().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.message : 'No se pudo iniciar el MCP de JaviSVN'}\n`)
+    app.exit(1)
+  })
+}
 
 app.on('window-all-closed', () => {
   cleanupPreviewTempDirs()
@@ -896,6 +676,7 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   cleanupPreviewTempDirs()
+  void stopAgentBroker()
 })
 
 ipcMain.handle('app:newWindow', async (event) => {
@@ -903,175 +684,34 @@ ipcMain.handle('app:newWindow', async (event) => {
   return true
 })
 
-// ─── SVN Helper ──────────────────────────────────────────────────────────────
-interface RunSvnOptions {
-  cwd?: string
-  onData?: (chunk: string) => void
-  onErrorData?: (chunk: string) => void
-  skipAuth?: boolean
-  timeoutMs?: number
-  allowLegacySslFallback?: boolean
-  forceLegacySsl?: boolean
-}
+ipcMain.handle('agentIntegration:getState', () => {
+  return getAgentIntegrationPublicState()
+})
 
-function getSvnAuthArgs(): string[] {
-  const creds = getStoredCredentials()
-  const args = [
-    '--non-interactive',
-    '--trust-server-cert',
-    '--trust-server-cert-failures=unknown-ca,cn-mismatch,expired,not-yet-valid,other'
-  ]
-  if (creds?.username) {
-    args.push('--username', creds.username, '--password', creds.password)
-  }
-  return args
-}
+ipcMain.handle('agentIntegration:setEnabled', async (_e, enabled: boolean) => {
+  return setAgentIntegrationPublicEnabled(Boolean(enabled))
+})
 
-const LEGACY_OPENSSL_CONF_NAME = 'javisvn-openssl-legacy.cnf'
-const LEGACY_OPENSSL_CONF = `openssl_conf = default_conf
+ipcMain.handle('agentIntegration:getClientConfig', () => {
+  return getAgentClientConfig()
+})
 
-[default_conf]
-ssl_conf = ssl_sect
+ipcMain.handle('agentIntegration:regenerateToken', async () => {
+  return regenerateAgentIntegrationPublicToken()
+})
 
-[ssl_sect]
-system_default = tls_defaults
+ipcMain.handle('agentIntegration:getActivity', () => {
+  return getAgentIntegrationPublicState().activity
+})
 
-[tls_defaults]
-MinProtocol = TLSv1
-CipherString = DEFAULT@SECLEVEL=0
-Options = UnsafeLegacyRenegotiation
-`
-
-function isLegacySslError(message: string): boolean {
-  return /E120171|SSL communication|tlsv1 alert|handshake/i.test(message)
-}
-
-function getLegacyOpenSslConfPath(): string | null {
-  try {
-    const confPath = join(app.getPath('userData'), LEGACY_OPENSSL_CONF_NAME)
-    if (!existsSync(confPath) || readFileSync(confPath, 'utf-8') !== LEGACY_OPENSSL_CONF) {
-      writeFileSync(confPath, LEGACY_OPENSSL_CONF, 'utf-8')
-    }
-    return confPath
-  } catch {
-    return null
-  }
-}
-
-function runSvnOnce(
-  args: string[],
-  options: RunSvnOptions,
-  useLegacySsl: boolean
-): Promise<{ stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const allArgs = options.skipAuth ? [...args] : [...args, ...getSvnAuthArgs()]
-    const env = { ...buildEnvWithExtraPath(), LANG: 'en_US.UTF-8' } as NodeJS.ProcessEnv
-    if (useLegacySsl) {
-      const confPath = getLegacyOpenSslConfPath()
-      if (confPath) env.OPENSSL_CONF = confPath
-    }
-
-    const proc = spawn(SVN_BIN, allArgs, {
-      cwd: options.cwd,
-      env
-    })
-
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-    let timeoutId: NodeJS.Timeout | undefined
-
-    const finishResolve = (value: { stdout: string; stderr: string }) => {
-      if (settled) return
-      settled = true
-      if (timeoutId) clearTimeout(timeoutId)
-      resolve(value)
-    }
-
-    const finishReject = (err: Error) => {
-      if (settled) return
-      settled = true
-      if (timeoutId) clearTimeout(timeoutId)
-      reject(err)
-    }
-
-    const timeoutMs = options.timeoutMs ?? 0
-    if (timeoutMs > 0) {
-      timeoutId = setTimeout(() => {
-        const cmd = args[0] || 'svn'
-        proc.kill('SIGTERM')
-        setTimeout(() => {
-          if (!settled) proc.kill('SIGKILL')
-        }, 1500)
-        finishReject(new Error(`Tiempo de espera agotado (${Math.ceil(timeoutMs / 1000)}s) al ejecutar SVN (${cmd})`))
-      }, timeoutMs)
-    }
-
-    proc.stdout.on('data', (d: Buffer) => {
-      const s = d.toString()
-      stdout += s
-      options.onData?.(s)
-    })
-    proc.stderr.on('data', (d: Buffer) => {
-      const s = d.toString()
-      stderr += s
-      options.onErrorData?.(s)
-    })
-    proc.on('close', (code) => {
-      if (code === 0) finishResolve({ stdout, stderr })
-      else finishReject(new Error(stderr || `SVN exited with code ${code}`))
-    })
-    proc.on('error', (err) => finishReject(err as Error))
-  })
-}
-
-async function runSvn(
-  args: string[],
-  options: RunSvnOptions = {}
-): Promise<{ stdout: string; stderr: string }> {
-  // Try legacy SSL first on every platform. This environment relies on
-  // TLS 1.0 + expired cert compatibility for target SVN servers.
-  const firstTryLegacy = options.forceLegacySsl !== false
-  const shouldFallback = options.allowLegacySslFallback !== false
-
-  try {
-    return await runSvnOnce(args, options, firstTryLegacy)
-  } catch (err: any) {
-    const message = String(err?.message || '')
-    if (firstTryLegacy || !shouldFallback || !isLegacySslError(message)) {
-      throw err
-    }
-    return runSvnOnce(args, options, true)
-  }
-}
+ipcMain.handle('agentIntegration:clearActivity', () => {
+  return clearAgentActivity()
+})
 
 async function parseXml(xml: string): Promise<any> {
   return parseStringPromise(xml, {
     explicitArray: false,
     mergeAttrs: false
-  })
-}
-
-function parseLogEntries(parsed: any): any[] {
-  const entries = parsed.log?.logentry
-  if (!entries) return []
-
-  const arr = Array.isArray(entries) ? entries : [entries]
-  return arr.map((e: any) => {
-    let paths: any[] = []
-    if (e.paths?.path) {
-      paths = Array.isArray(e.paths.path) ? e.paths.path : [e.paths.path]
-    }
-    return {
-      revision: parseInt(e.$?.revision || '0'),
-      author: e.author || '',
-      date: e.date || '',
-      message: e.msg || '',
-      paths: paths.map((p: any) => ({
-        path: typeof p === 'string' ? p : p._ || '',
-        action: p.$?.action || 'M'
-      }))
-    }
   })
 }
 
@@ -1125,101 +765,28 @@ ipcMain.handle('creds:setServerUrl', (_e, serverUrl: string) => {
 
 // ─── IPC: Remote server tree ─────────────────────────────────────────────────
 ipcMain.handle('remotes:list', () => {
-  const remotes = ensureRemotesSeeded()
-  const activeUrl = getCurrentServerUrl()
-  return remotes.map((r) => ({
-    ...r,
-    active: r.url === activeUrl
-  }))
+  return listRemotes()
 })
 
 ipcMain.handle('remotes:save', (_e, payload: { name: string; url: string }) => {
-  const name = (payload?.name || '').trim()
-  const url = (payload?.url || '').trim()
-  if (!name) throw new Error('El nombre del repositorio remoto es requerido')
-  if (!url) throw new Error('La URL del repositorio remoto es requerida')
-
-  const remotes = ensureRemotesSeeded()
-  const normalized = url.replace(/\/$/, '')
-  const byUrl = remotes.find((r) => r.url.replace(/\/$/, '') === normalized)
-
-  let saved: StoredRemote
-  if (byUrl) {
-    saved = { ...byUrl, name, url }
-  } else {
-    saved = {
-      id: `remote-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      name,
-      url,
-      createdAt: new Date().toISOString()
-    }
-  }
-
-  const next = byUrl
-    ? remotes.map((r) => (r.id === byUrl.id ? saved : r))
-    : [...remotes, saved]
-  saveStoredRemotes(next)
-  setCurrentServerUrl(saved.url)
-
-  return { ...saved, active: true }
+  return saveRemote(payload)
 })
 
 ipcMain.handle('remotes:select', (_e, remoteId: string) => {
-  const id = (remoteId || '').trim()
-  if (!id) throw new Error('Remote inválido')
-
-  const remotes = ensureRemotesSeeded()
-  const selected = remotes.find((r) => r.id === id)
-  if (!selected) throw new Error('Repositorio remoto no encontrado')
-
-  setCurrentServerUrl(selected.url)
-  return { ...selected, active: true }
+  return selectRemote(remoteId)
 })
 
 ipcMain.handle('remotes:delete', (_e, remoteId: string) => {
-  const id = (remoteId || '').trim()
-  if (!id) throw new Error('Remote inválido')
-
-  const remotes = ensureRemotesSeeded()
-  const deleted = remotes.find((r) => r.id === id)
-  const next = remotes.filter((r) => r.id !== id)
-  saveStoredRemotes(next)
-
-  if (deleted?.url === getCurrentServerUrl()) {
-    if (next.length > 0) setCurrentServerUrl(next[0].url)
-    else clearCurrentServerUrl()
-  }
-
-  return true
+  return deleteRemote(remoteId)
 })
 
 ipcMain.handle('remotes:rename', (_e, remoteId: string, name: string, url?: string) => {
-  const id = (remoteId || '').trim()
-  const newName = (name || '').trim()
-  if (!id) throw new Error('Remote inválido')
-  if (!newName) throw new Error('El nombre es requerido')
-
-  const remotes = ensureRemotesSeeded()
-  const remote = remotes.find((r) => r.id === id)
-  if (!remote) throw new Error('Repositorio remoto no encontrado')
-
-  const newUrl = (url || '').trim() || remote.url
-  const next = remotes.map((r) => (r.id === id ? { ...r, name: newName, url: newUrl } : r))
-  saveStoredRemotes(next)
-  if (remote.url === getCurrentServerUrl()) setCurrentServerUrl(newUrl)
-  return { ...remote, name: newName, url: newUrl }
+  return renameRemote(remoteId, name, url)
 })
 
 // ─── IPC: SVN binary override (legacy compatibility) ────────────────────────
 ipcMain.handle('svn:getBinPath', async () => {
-  let version: string | null = null
-  try {
-    const { stdout } = await runSvn(['--version', '--quiet'], { skipAuth: true, timeoutMs: 5000 })
-    version = stdout.trim() || null
-  } catch {}
-
-  const configured = (storeGet('svnBinPath') || '').toString().trim() || null
-  return { bin: SVN_BIN, configured, version }
+  return getSvnBinInfo()
 })
 
 ipcMain.handle('svn:setBinPath', async (_e, binPath: string) => {
@@ -1227,82 +794,14 @@ ipcMain.handle('svn:setBinPath', async (_e, binPath: string) => {
 
   if (!next || next.toLowerCase() === 'auto') {
     storeDelete('svnBinPath')
-    SVN_BIN = findSvnBin()
-  } else {
-    if (next !== 'svn' && !existsSync(next)) {
-      throw new Error(`No existe el binario SVN en la ruta: ${next}`)
-    }
-    if (!canExecuteSvn(next)) {
-      throw new Error(`No se pudo ejecutar ese binario SVN: ${next}`)
-    }
-    storeSet('svnBinPath', next)
-    SVN_BIN = next
+    return setSvnBin('svn')
   }
-
-  let version: string | null = null
-  try {
-    const { stdout } = await runSvn(['--version', '--quiet'], { skipAuth: true, timeoutMs: 5000 })
-    version = stdout.trim() || null
-  } catch {}
-
-  return { bin: SVN_BIN, version }
+  return setSvnBin(next)
 })
 
 // ─── IPC: Local Repos ─────────────────────────────────────────────────────────
 ipcMain.handle('repos:list', async () => {
-  const results: any[] = []
-  if (!existsSync(BASE_REPO_PATH)) return results
-
-  const entries = readdirSync(BASE_REPO_PATH)
-  for (const entry of entries) {
-    const fullPath = join(BASE_REPO_PATH, entry)
-    try {
-      const stat = statSync(fullPath)
-      if (!stat.isDirectory()) continue
-
-      const svnDir = join(fullPath, '.svn')
-      if (!existsSync(svnDir)) continue
-
-      // Get SVN info
-      try {
-        const { stdout } = await runSvn(['info', '--xml', fullPath])
-        const parsed = await parseXml(stdout)
-        const info = parsed.info?.entry
-        const url = info?.url || ''
-        const revision = parseInt(info?.$?.revision || '0')
-        const date = info?.commit?.date || new Date().toISOString()
-        const author = info?.commit?.author || ''
-
-        // Get status count
-        let changesCount = 0
-        try {
-          const { stdout: st } = await runSvn(['status', '--xml', fullPath])
-          const sp = await parseXml(st)
-          changesCount = buildStatusChangesFromParsed(sp, fullPath).length
-        } catch {}
-
-        results.push({
-          name: entry,
-          path: fullPath,
-          url,
-          revision,
-          lastUpdated: date,
-          changesCount,
-          author
-        })
-      } catch {
-        results.push({
-          name: entry,
-          path: fullPath,
-          url: '',
-          revision: 0,
-          lastUpdated: new Date().toISOString(),
-          changesCount: 0
-        })
-      }
-    } catch {}
-  }
-  return results
+  return listLocalReposService()
 })
 
 ipcMain.handle('repos:basePath', () => BASE_REPO_PATH)
@@ -1323,260 +822,27 @@ ipcMain.handle('repos:delete', async (_e, repoPath: string) => {
   } catch (error) {
     throw buildLocalRepoDeleteError(repoPath, error)
   }
-
-  invalidateLocalRepoUrlIndexCache()
 })
 
 // ─── IPC: SVN List (remote) ───────────────────────────────────────────────────
 ipcMain.handle('svn:list', async (_e, url: string) => {
-  const { stdout } = await runSvn(['list', '--xml', url], { timeoutMs: 30000 })
-  const parsed = await parseXml(stdout)
-  const list = parsed.lists?.list
-  if (!list) return []
-
-  const entries = list.entry
-  if (!entries) return []
-
-  const arr = Array.isArray(entries) ? entries : [entries]
-  const normalizedBaseUrl = normalizeRepoUrl(url)
-  const localRepoUrlIndex = await getLocalRepoUrlIndex()
-  const isDirectFileListing = arr.length === 1
-    && String(arr[0]?.$?.kind || '') === 'file'
-    && basename(normalizedBaseUrl) === String(arr[0]?.name?._?.trim() || arr[0]?.name || '').replace(/\/$/, '')
-
-  return arr.map((e: any) => {
-    const name = String(e.name?._?.trim() || e.name || '').replace(/\/$/, '')
-    const isDir = e.$?.kind === 'dir'
-    const entryUrl = isDirectFileListing ? normalizedBaseUrl : `${normalizedBaseUrl}/${name}`
-    const localPath = localRepoUrlIndex.get(normalizeRepoUrl(entryUrl))
-    return {
-      name,
-      url: entryUrl,
-      kind: e.$?.kind || 'file',
-      revision: parseInt(e.commit?.$?.revision || '0'),
-      author: e.commit?.author || '',
-      date: e.commit?.date || new Date().toISOString(),
-      isCheckedOut: Boolean(localPath) && isDir,
-      localPath: localPath && isDir ? localPath : undefined
-    }
-  })
+  return listRemoteService(url)
 })
-
-// ─── Search helpers ──────────────────────────────────────────────────────────
-
-// Extensions that cannot contain text — skip in content search
-const BINARY_EXTENSIONS = new Set([
-  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'tiff', 'psd',
-  'jar', 'war', 'ear', 'zip', 'tar', 'gz', 'bz2', '7z', 'rar',
-  'class', 'dll', 'so', 'dylib', 'exe', 'obj', 'o', 'a',
-  'mp4', 'mp3', 'avi', 'mov', 'mkv', 'wav', 'flac', 'ogg',
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-  'db', 'sqlite', 'bin', 'dat', 'dump',
-  'ttf', 'woff', 'woff2', 'eot'
-])
-
-// Run at most `concurrency` async tasks simultaneously
-async function runConcurrent(
-  tasks: Array<() => Promise<void>>,
-  concurrency: number
-): Promise<void> {
-  let nextIdx = 0
-  const worker = async () => {
-    while (nextIdx < tasks.length) {
-      const i = nextIdx++
-      await tasks[i]()
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker))
-}
-
-// Stream `svn cat <url>` and resolve true as soon as `query` is found; kills early
-function catSearchFile(fileUrl: string, query: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const env = { ...buildEnvWithExtraPath(), LANG: 'en_US.UTF-8' } as NodeJS.ProcessEnv
-    const confPath = getLegacyOpenSslConfPath()
-    if (confPath) env.OPENSSL_CONF = confPath
-
-    const proc = spawn(SVN_BIN, ['cat', fileUrl, ...getSvnAuthArgs()], {
-      env
-    })
-
-    let buffer = ''
-    let settled = false
-
-    const finish = (result: boolean) => {
-      if (settled) return
-      settled = true
-      resolve(result)
-    }
-
-    const timeoutId = setTimeout(() => { proc.kill('SIGTERM'); finish(false) }, 30000)
-
-    proc.stdout.on('data', (chunk: Buffer) => {
-      if (settled) return
-      buffer += chunk.toString('utf-8')
-      if (buffer.toLowerCase().includes(query)) {
-        clearTimeout(timeoutId)
-        proc.kill('SIGTERM')
-        finish(true)
-        return
-      }
-      // Prevent memory explosion: keep tail for cross-chunk match detection
-      if (buffer.length > 512 * 1024) {
-        buffer = buffer.slice(-(query.length + 16))
-      }
-    })
-
-    proc.on('close', () => { clearTimeout(timeoutId); finish(false) })
-    proc.on('error', () => { clearTimeout(timeoutId); finish(false) })
-  })
-}
 
 // ─── IPC: SVN Search Remote ──────────────────────────────────────────────────
 ipcMain.handle('svn:searchRemote', async (event, url: string, query: string, deepSearch: boolean) => {
-  const q = (query || '').trim().toLowerCase()
-  if (!q) {
-    event.sender.send('svn:searchDone', { searched: 0, total: 0 })
-    return { ok: true }
-  }
-
-  // Step 1 — BFS parallel listing: 5 dirs at a time, 15s timeout each
-  // Avoids the single huge svn list --depth infinity call that times out on large repos
-  type SearchEntry = { path: string; name: string; kind: 'dir' | 'file'; entryUrl: string }
-  const baseUrl = normalizeRepoUrl(url)
-  const allEntries: SearchEntry[] = []
-  const dirQueue: string[] = [baseUrl]
-  let processedDirs = 0
-  const LIST_BATCH = 5
-
-  while (dirQueue.length > 0) {
-    const batch = dirQueue.splice(0, LIST_BATCH)
-
-    const stdouts = await Promise.all(
-      batch.map(async (dirUrl) => {
-        try {
-          const { stdout } = await runSvn(['list', '--xml', dirUrl], { timeoutMs: 30000 })
-          return { dirUrl, stdout }
-        } catch {
-          return { dirUrl, stdout: null }
-        }
-      })
-    )
-
-    processedDirs += batch.length
-
-    for (const { dirUrl, stdout } of stdouts) {
-      if (!stdout) continue
-      const parsed = await parseXml(stdout)
-      const rawList = parsed.lists?.list
-      const listArr = Array.isArray(rawList) ? rawList : (rawList ? [rawList] : [])
-
-      for (const list of listArr) {
-        const listPath = normalizeRepoUrl(dirUrl)
-        const entries = list.entry
-        if (!entries) continue
-        const arr = Array.isArray(entries) ? entries : [entries]
-
-        for (const e of arr) {
-          const rawName: string = e.name?._?.trim() || (typeof e.name === 'string' ? e.name : '') || ''
-          const name = rawName.replace(/\/$/, '')
-          if (!name) continue
-          const kind: 'dir' | 'file' = e.$?.kind === 'dir' ? 'dir' : 'file'
-          const entryUrl = listPath + '/' + name
-          const relativePath = entryUrl.replace(new RegExp(`^${escapeRegExp(baseUrl)}/?`), '')
-          allEntries.push({ path: relativePath, name, kind, entryUrl })
-          if (kind === 'dir') dirQueue.push(entryUrl)
-        }
-      }
-    }
-
-    event.sender.send('svn:searchProgress', {
-      searched: 0,
-      total: 0,
-      listingStats: { dirs: processedDirs, entries: allEntries.length }
-    })
-  }
-
-  // Step 2 — Name matches: filter + stream immediately to renderer
-  const nameResults = allEntries
-    .filter(e => e.name.toLowerCase().includes(q))
-    .map(e => ({ ...e, matchType: 'name' as const }))
-
-  for (const r of nameResults) {
-    event.sender.send('svn:searchResult', r)
-  }
-
-  // Step 2b — Search in revision log messages (always, regardless of deepSearch)
-  try {
-    const { stdout: logStdout } = await runSvn(
-      ['log', '--xml', '--limit', '500', url],
-      { timeoutMs: 120000 }
-    )
-    const logParsed = await parseXml(logStdout)
-    const logEntries = parseLogEntries(logParsed)
-
-    for (const entry of logEntries) {
-      if (entry.message && entry.message.toLowerCase().includes(q)) {
-        const preview = entry.message.length > 90
-          ? entry.message.slice(0, 90) + '…'
-          : entry.message
-        event.sender.send('svn:searchResult', {
-          path: preview,
-          name: `r${entry.revision}`,
-          kind: 'revision' as const,
-          matchType: 'comment' as const,
-          entryUrl: baseUrl,
-          revision: entry.revision,
-          revisionMessage: entry.message
-        })
-      }
-    }
-  } catch {
-    // Log search failed silently — continue with name/content results
-  }
-
-  if (!deepSearch) {
-    event.sender.send('svn:searchDone', { searched: 0, total: 0 })
-    return { ok: true }
-  }
-
-  // Step 3 — Content search: 8 parallel svn cat streams, no temp dir, early exit per file
-  const nameResultPaths = new Set(nameResults.map(r => r.path))
-  const fileEntries = allEntries.filter(e =>
-    e.kind === 'file' &&
-    !nameResultPaths.has(e.path) &&
-    !BINARY_EXTENSIONS.has((e.name.split('.').pop() || '').toLowerCase())
-  )
-
-  const total = fileEntries.length
-  let searched = 0
-
-  event.sender.send('svn:searchProgress', { searched: 0, total })
-
-  const CONCURRENCY = 8
-  const tasks = fileEntries.map(entry => async () => {
-    const hasMatch = await catSearchFile(entry.entryUrl, q)
-    searched++
-    if (hasMatch) {
-      event.sender.send('svn:searchResult', { ...entry, matchType: 'content' as const })
-    }
-    event.sender.send('svn:searchProgress', { searched, total })
+  const response = await searchRemoteService(url, query, deepSearch, {
+    onProgress: (progress) => event.sender.send('svn:searchProgress', progress),
+    onResult: (result) => event.sender.send('svn:searchResult', result),
+    maxResults: 500
   })
-
-  await runConcurrent(tasks, CONCURRENCY)
-  event.sender.send('svn:searchDone', { searched: total, total })
+  event.sender.send('svn:searchDone', { searched: response.searched, total: response.total })
   return { ok: true }
 })
 
 // ─── IPC: SVN Remote actions ────────────────────────────────────────────────
 ipcMain.handle('svn:remoteLog', async (_e, url: string, limit = 50) => {
-  const safeLimit = Math.max(1, Math.min(500, Number(limit) || 50))
-  const { stdout } = await runSvn(
-    ['log', '--xml', '--verbose', `--limit=${safeLimit}`, url],
-    { timeoutMs: 30000 }
-  )
-  const parsed = await parseXml(stdout)
-  return parseLogEntries(parsed)
+  return remoteLogService(url, limit)
 })
 
 ipcMain.handle('svn:remoteMkdir', async (_e, parentUrl: string, name: string, message?: string) => {
@@ -1611,28 +877,10 @@ ipcMain.handle('svn:remoteCreateFile', async (_e, parentUrl: string, name: strin
 // ─── IPC: SVN Checkout ───────────────────────────────────────────────────────
 ipcMain.handle('svn:checkout', async (event, url: string, targetName: string) => {
   const targetWindow = getEventWindow(event)
-  const safeTargetName = sanitizeLocalRepoName(targetName)
-  const targetPath = join(BASE_REPO_PATH, safeTargetName)
-
-  if (existsSync(targetPath)) {
-    throw new Error(`Ya existe un directorio con el nombre "${safeTargetName}"`)
-  }
-
-  try {
-    await runSvn(
-      ['checkout', url, targetPath],
-      {
-        timeoutMs: 10 * 60 * 1000,
-        onData: (chunk) => sendToWindow(targetWindow, 'svn:checkout-progress', chunk),
-        onErrorData: (chunk) => sendToWindow(targetWindow, 'svn:checkout-progress', chunk)
-      }
-    )
-    invalidateLocalRepoUrlIndexCache()
-    return { success: true, path: targetPath }
-  } catch (err: any) {
-    const msg = String(err?.message || '').trim()
-    throw new Error(msg || 'Error al descargar el repositorio')
-  }
+  return checkoutRemoteToLocalRepo(url, sanitizeLocalRepoName(targetName), {
+    onData: (chunk) => sendToWindow(targetWindow, 'svn:checkout-progress', chunk),
+    onErrorData: (chunk) => sendToWindow(targetWindow, 'svn:checkout-progress', chunk)
+  })
 })
 
 // ─── IPC: SVN Export ─────────────────────────────────────────────────────────
@@ -1687,36 +935,12 @@ ipcMain.handle('dialog:pickExportFolder', async () => {
 })
 
 // ─── IPC: SVN Update ─────────────────────────────────────────────────────────
-const SSL_TRANSIENT_RE = /svn:\s+E1[12]\d{4}:.*(?:SSL|Unable to connect|Error running context)/i
-
-function filterSslNoise(chunk: string): string {
-  return chunk
-    .split('\n')
-    .filter((line) => !SSL_TRANSIENT_RE.test(line))
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-}
-
 ipcMain.handle('svn:update', async (event, repoPath: string) => {
   const targetWindow = getEventWindow(event)
-  try {
-    const { stdout, stderr } = await runSvn(
-      ['update'],
-      {
-        cwd: repoPath,
-        timeoutMs: 10 * 60 * 1000,
-        onData: (chunk) => sendToWindow(targetWindow, 'svn:update-progress', chunk),
-        onErrorData: (chunk) => {
-          const filtered = filterSslNoise(chunk)
-          if (filtered.trim()) sendToWindow(targetWindow, 'svn:update-progress', filtered)
-        }
-      }
-    )
-    return { success: true, output: stdout || stderr }
-  } catch (err: any) {
-    const msg = String(err?.message || '').trim()
-    throw new Error(msg || 'Error al actualizar el repositorio')
-  }
+  return updateLocalRepo(repoPath, {
+    onData: (chunk) => sendToWindow(targetWindow, 'svn:update-progress', chunk),
+    onErrorData: (chunk) => sendToWindow(targetWindow, 'svn:update-progress', chunk)
+  })
 })
 
 ipcMain.handle('svn:cleanup', async (_e, repoPath: string) => {
@@ -1733,160 +957,14 @@ ipcMain.handle('svn:cleanup', async (_e, repoPath: string) => {
   }
 })
 
-function normalizeStatusEntryPath(repoPath: string, entryPath: string): string {
-  const rawPath = String(entryPath || '.').replace(/\\/g, '/')
-  if (!rawPath || rawPath === '.') return '.'
-
-  if (isAbsolute(rawPath)) {
-    const rel = relative(resolve(repoPath), rawPath).replace(/\\/g, '/')
-    return normalizeRelativePath(rel) || '.'
-  }
-
-  return normalizeRelativePath(rawPath) || '.'
-}
-
-function detectStatusEntryKind(repoPath: string, relPath: string): 'file' | 'dir' {
-  try {
-    const abs = relPath === '.' ? resolve(repoPath) : resolve(repoPath, relPath)
-    return existsSync(abs) && statSync(abs).isDirectory() ? 'dir' : 'file'
-  } catch {
-    return 'file'
-  }
-}
-
-function mapStatus(item: string, props = 'none'): LocalChangeStatus | null {
-  const safeItem = String(item || 'normal')
-  const safeProps = String(props || 'none')
-
-  if (safeItem === 'normal') {
-    if (safeProps === 'modified') return 'M'
-    if (safeProps === 'conflicted') return 'C'
-    return null
-  }
-
-  const map: Record<string, LocalChangeStatus> = {
-    modified: 'M',
-    merged: 'M',
-    added: 'A',
-    deleted: 'D',
-    unversioned: '?',
-    conflicted: 'C',
-    missing: '!',
-    obstructed: '!',
-    replaced: 'R',
-    incomplete: 'I'
-  }
-
-  if (safeItem === 'none' || safeItem === 'ignored' || safeItem === 'external') return null
-  return map[safeItem] || '?'
-}
-
-function buildStatusChangesFromParsed(parsed: any, repoPath: string): LocalStatusChange[] {
-  const target = parsed.status?.target
-  if (!target?.entry) return []
-
-  const entries = Array.isArray(target.entry) ? target.entry : [target.entry]
-  const baseChanges: LocalStatusChange[] = []
-
-  for (const e of entries) {
-    const wcStatus = e['wc-status']?.$ || {}
-    const item = String(wcStatus.item || 'normal')
-    const props = String(wcStatus.props || 'none')
-    const status = mapStatus(item, props)
-    if (!status) continue
-
-    const path = normalizeStatusEntryPath(repoPath, e.$?.path)
-    baseChanges.push({
-      path,
-      displayPath: path,
-      status,
-      checked: status !== '?' && status !== 'I',
-      kind: detectStatusEntryKind(repoPath, path),
-      rawStatus: item,
-      wcLocked: String(wcStatus['wc-locked'] || '') === 'true'
-    })
-  }
-
-  const expandedFromUnversionedDirs: LocalStatusChange[] = []
-
-  const walkUnversionedDir = (absDir: string, relDir: string) => {
-    try {
-      for (const child of readdirSync(absDir, { withFileTypes: true })) {
-        if (child.name === '.svn') continue
-
-        const childAbs = join(absDir, child.name)
-        const childRel = join(relDir === '.' ? '' : relDir, child.name).replace(/\\/g, '/')
-
-        if (child.isDirectory?.()) {
-          expandedFromUnversionedDirs.push({
-            path: childRel,
-            displayPath: childRel,
-            status: '?',
-            checked: false,
-            kind: 'dir',
-            rawStatus: 'unversioned',
-            wcLocked: false
-          })
-          walkUnversionedDir(childAbs, childRel)
-        } else {
-          expandedFromUnversionedDirs.push({
-            path: childRel,
-            displayPath: childRel,
-            status: '?',
-            checked: false,
-            kind: 'file',
-            rawStatus: 'unversioned',
-            wcLocked: false
-          })
-        }
-      }
-    } catch {
-      return
-    }
-  }
-
-  for (const change of baseChanges) {
-    if (change.status !== '?') continue
-
-    const abs = change.path === '.' ? resolve(repoPath) : resolve(repoPath, change.path)
-    try {
-      const st = statSync(abs)
-      if (st.isDirectory()) walkUnversionedDir(abs, change.path)
-    } catch {
-      // ignore invalid paths
-    }
-  }
-
-  const merged = new Map<string, LocalStatusChange>()
-  for (const c of baseChanges) merged.set(c.path, c)
-  for (const c of expandedFromUnversionedDirs) {
-    if (!merged.has(c.path)) merged.set(c.path, c)
-  }
-
-  return Array.from(merged.values())
-}
-
 // ─── IPC: SVN Status ─────────────────────────────────────────────────────────
 ipcMain.handle('svn:status', async (_e, repoPath: string) => {
-  const { stdout } = await runSvn(['status', '--xml'], { cwd: repoPath })
-  const parsed = await parseXml(stdout)
-  return buildStatusChangesFromParsed(parsed, repoPath)
+  return localStatusService(repoPath)
 })
 
 // ─── IPC: Local file content (for unversioned preview) ──────────────────────
 ipcMain.handle('svn:fileContent', async (_e, repoPath: string, filePath: string) => {
-  const { targetAbs } = resolveRepoRelativeTarget(repoPath, filePath)
-
-  if (!existsSync(targetAbs)) return '(archivo no encontrado)'
-  const st = statSync(targetAbs)
-  if (!st.isFile()) return '(no es un archivo regular)'
-
-  try {
-    const text = readFileSync(targetAbs, 'utf-8')
-    return text || '(archivo vacío)'
-  } catch {
-    return '(no se pudo leer el contenido del archivo)'
-  }
+  return localFileContentService(repoPath, filePath).text
 })
 
 ipcMain.handle('svn:getLocalPreviewFile', async (_e, repoPath: string, filePath: string) => {
@@ -1940,24 +1018,7 @@ ipcMain.handle('svn:getConflictContent', async (_e, repoPath: string, filePath: 
 
 // ─── IPC: SVN Diff ───────────────────────────────────────────────────────────
 ipcMain.handle('svn:diff', async (_e, repoPath: string, filePath: string) => {
-  try {
-    const { stdout } = await runSvn(['diff', filePath], { cwd: repoPath })
-    return stdout || '(sin cambios)'
-  } catch {
-    try {
-      const { stdout } = await runSvn(['status', '--xml', filePath], { cwd: repoPath })
-      const parsed = await parseXml(stdout)
-      const target = parsed.status?.target
-      const entry = Array.isArray(target?.entry) ? target.entry[0] : target?.entry
-      const item = entry?.['wc-status']?.$?.item || ''
-      if (item === 'unversioned') {
-        return '(archivo sin versionar: SVN no genera diff hasta hacer add/commit)'
-      }
-    } catch {
-      // ignore secondary error and fallback to generic message
-    }
-    return '(no se pudo obtener el diff)'
-  }
+  return (await localDiffService(repoPath, filePath)).text
 })
 
 ipcMain.handle('svn:add', async (_e, repoPath: string, filePath: string, scope: 'item' | 'branch' = 'item') => {
@@ -2027,65 +1088,12 @@ ipcMain.handle('svn:ignore', async (_e, repoPath: string, filePath: string, scop
 })
 
 ipcMain.handle('svn:blame', async (_e, repoPath: string, filePath: string) => {
-  const { targetAbs, relativePath } = resolveRepoRelativeTarget(repoPath, filePath)
-
-  if (!existsSync(targetAbs)) {
-    throw new Error('El archivo no existe')
-  }
-  if (!statSync(targetAbs).isFile()) {
-    throw new Error('Blame solo está disponible para archivos')
-  }
-
-  const { stdout } = await runSvn(['blame', '--xml', relativePath], {
-    cwd: repoPath,
-    timeoutMs: 60000
-  })
-  const parsed = await parseXml(stdout)
-  const entries = parsed.blame?.target?.entry
-  const blameEntries = entries ? (Array.isArray(entries) ? entries : [entries]) : []
-  const normalizedContent = readUtf8IfExists(targetAbs).replace(/\r\n/g, '\n')
-  const lines = normalizedContent.split('\n')
-  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
-  if (lines.length === 0) lines.push('')
-
-  return lines.map((content, index) => {
-    const entry = blameEntries[index]
-    const commit = entry?.commit
-    return {
-      lineNum: index + 1,
-      revision: Number.parseInt(commit?.$?.revision || '0', 10) || 0,
-      author: String(commit?.author || ''),
-      date: String(commit?.date || ''),
-      content
-    }
-  })
+  return localBlameService(repoPath, filePath)
 })
 
 // ─── IPC: SVN Diff at specific revision ──────────────────────────────────────
 ipcMain.handle('svn:revisionFileDiff', async (_e, repoPath: string, revision: number, svnPath: string) => {
-  // Get the repository root URL from the working copy
-  const { stdout: infoXml } = await runSvn(['info', '--xml'], { cwd: repoPath })
-  const parsed = await xml2js.parseStringPromise(infoXml, { explicitArray: false })
-  const rootUrl: string = parsed?.info?.entry?.repository?.root || ''
-  if (!rootUrl) throw new Error('No se pudo obtener la URL raíz del repositorio')
-
-  const fileUrl = rootUrl + svnPath
-  try {
-    const { stdout } = await runSvn([
-      'diff',
-      `-c${revision}`,
-      '-x', '-U 9999',
-      fileUrl
-    ])
-    return stdout || '(sin cambios en esta revisión)'
-  } catch (err: any) {
-    const msg = String(err?.message || '')
-    if (msg.includes('was added') || msg.includes('E195020')) {
-      // File was added in this revision — diff against empty
-      return `(archivo añadido en r${revision})`
-    }
-    throw err
-  }
+  return (await localRevisionFileDiffService(repoPath, revision, svnPath)).text
 })
 
 ipcMain.handle('svn:restorePathAtRevision', async (
@@ -2290,87 +1298,27 @@ ipcMain.handle('svn:resolve', async (_e, repoPath: string, filePath: string, acc
 
 // ─── IPC: SVN Log ────────────────────────────────────────────────────────────
 ipcMain.handle('svn:log', async (_e, repoPath: string, limit = 50, fromRevision?: number) => {
-  const safeLimit = Math.max(1, Math.min(500, Number(limit) || 50))
-  const safeFromRevision = Number(fromRevision)
-  const args = ['log', '--xml', '--verbose', `--limit=${safeLimit}`]
-  if (Number.isFinite(safeFromRevision) && safeFromRevision > 0) {
-    args.push('-r', `${Math.floor(safeFromRevision)}:1`)
-  } else {
-    args.push('-r', 'HEAD:1')
-  }
-
-  const { stdout } = await runSvn(args, { cwd: repoPath })
-  const parsed = await parseXml(stdout)
-  const entries = parsed.log?.logentry
-  if (!entries) return []
-
-  const arr = Array.isArray(entries) ? entries : [entries]
-  return arr.map((e: any) => {
-    let paths: any[] = []
-    if (e.paths?.path) {
-      paths = Array.isArray(e.paths.path) ? e.paths.path : [e.paths.path]
-    }
-    return {
-      revision: parseInt(e.$?.revision || '0'),
-      author: e.author || '',
-      date: e.date || '',
-      message: e.msg || '',
-      paths: paths.map((p: any) => ({
-        path: typeof p === 'string' ? p : p._ || '',
-        action: p.$?.action || 'M'
-      }))
-    }
-  })
+  return localLogService(repoPath, limit, fromRevision)
 })
 
 // ─── IPC: SVN Cat (remote file content) ──────────────────────────────────────
 ipcMain.handle('svn:cat', async (_e, url: string) => {
-  const { stdout } = await runSvn(['cat', url])
-  if (stdout.length > 500_000) {
-    return stdout.slice(0, 500_000) + '\n\n[... contenido truncado a 500 KB ...]'
-  }
-  return stdout
+  return (await remoteFileContentService(url)).text
 })
 
 // ─── IPC: SVN Repo Root URL ──────────────────────────────────────────────────
 ipcMain.handle('svn:getRepoRoot', async (_e, url: string) => {
-  const { stdout } = await runSvn(['info', '--xml', url])
-  const parsed = await xml2js.parseStringPromise(stdout, { explicitArray: false })
-  return (parsed?.info?.entry?.repository?.root as string) || null
+  return remoteRepoRootService(url)
 })
 
 // ─── IPC: SVN Remote Diff at specific revision ───────────────────────────────
 ipcMain.handle('svn:remoteRevisionDiff', async (_e, baseUrl: string, svnPath: string, revision: number) => {
-  const { stdout: infoXml } = await runSvn(['info', '--xml', baseUrl])
-  const parsed = await xml2js.parseStringPromise(infoXml, { explicitArray: false })
-  const rootUrl: string = parsed?.info?.entry?.repository?.root || ''
-  if (!rootUrl) throw new Error('No se pudo obtener la URL raíz del repositorio')
-
-  const fileUrl = rootUrl + svnPath
-  try {
-    const { stdout } = await runSvn(['diff', `-c${revision}`, '-x', '-U 9999', fileUrl])
-    return stdout || '(sin cambios en esta revisión)'
-  } catch (err: any) {
-    const msg = String(err?.message || '')
-    if (msg.includes('was added') || msg.includes('E195020')) {
-      return `(archivo añadido en r${revision})`
-    }
-    throw err
-  }
+  return (await remoteRevisionDiffService(baseUrl, svnPath, revision)).text
 })
 
 // ─── IPC: SVN Info ───────────────────────────────────────────────────────────
 ipcMain.handle('svn:info', async (_e, path: string) => {
-  const { stdout } = await runSvn(['info', '--xml', path])
-  const parsed = await parseXml(stdout)
-  const entry = parsed.info?.entry
-  return {
-    url: entry?.url || '',
-    revision: parseInt(entry?.$?.revision || '0'),
-    author: entry?.commit?.author || '',
-    date: entry?.commit?.date || '',
-    rootUrl: entry?.repository?.root || ''
-  }
+  return svnInfoService(path)
 })
 
 // ─── IPC: Dialog ─────────────────────────────────────────────────────────────
@@ -2416,13 +1364,7 @@ ipcMain.handle('svn:ping', async (_e, url: string) => {
 
 // Ping usando credenciales inline — sin persistir en el store
 ipcMain.handle('svn:pingWithCreds', async (_e, creds: { url: string; username: string; password: string }) => {
-  const inlineAuthArgs = [
-    '--non-interactive',
-    '--trust-server-cert',
-    '--trust-server-cert-failures=unknown-ca,cn-mismatch,expired,not-yet-valid,other',
-    '--username', creds.username,
-    '--password', creds.password
-  ]
+  const inlineAuthArgs = buildInlineAuthArgs(creds.username, creds.password)
   try {
     await runSvn(['info', '--xml', creds.url, ...inlineAuthArgs], { skipAuth: true, timeoutMs: 15000 })
     return { ok: true }
@@ -2439,9 +1381,9 @@ ipcMain.handle('svn:pingWithCreds', async (_e, creds: { url: string; username: s
 ipcMain.handle('svn:version', async () => {
   try {
     const { stdout } = await runSvn(['--version', '--quiet'], { skipAuth: true })
-    return { version: stdout.trim(), bin: SVN_BIN }
+    return { version: stdout.trim(), bin: getSvnBin() }
   } catch {
-    return { version: null, bin: SVN_BIN }
+    return { version: null, bin: getSvnBin() }
   }
 })
 
@@ -2475,9 +1417,8 @@ ipcMain.handle('svn:install', async (event) => {
     })
     proc.on('close', (code) => {
       if (code === 0) {
-        // Refresh SVN_BIN after install
-        SVN_BIN = findSvnBin()
-        resolve({ success: true, bin: SVN_BIN })
+        const refreshed = setSvnBin('svn')
+        resolve({ success: true, bin: refreshed.bin })
       } else {
         reject(new Error('Error al instalar SVN via Homebrew'))
       }

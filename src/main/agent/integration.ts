@@ -24,6 +24,7 @@ import {
 import { listRemotes } from '../services/store'
 import { checkoutRemoteToLocalRepo, deriveCheckoutTargetName, sanitizeLocalRepoName } from '../services/checkout'
 import { updateLocalRepo } from '../services/update'
+import { buildAgentClientLaunchConfig } from './client-config'
 import { AgentActivityLog } from './activity-log'
 import { AgentBrokerServer } from './broker'
 import { AgentActivityEntry, AgentSession, BrokerRequest, createActivityEntry } from './protocol'
@@ -399,18 +400,15 @@ export function getAgentClientConfig(): {
 } {
   const token = ensureAgentIntegrationToken()
   const launchArgs = app.isPackaged ? ['--mcp-stdio'] : [app.getAppPath(), '--mcp-stdio']
-
-  if (process.platform === 'darwin') {
-    return {
-      command: '/usr/bin/env',
-      args: ['-u', 'ELECTRON_RUN_AS_NODE', process.execPath, ...launchArgs],
-      env: { JAVISVN_MCP_TOKEN: token }
-    }
-  }
+  const launchConfig = buildAgentClientLaunchConfig({
+    platform: process.platform,
+    execPath: process.execPath,
+    launchArgs,
+    comSpec: process.env.ComSpec
+  })
 
   return {
-    command: process.execPath,
-    args: launchArgs,
+    ...launchConfig,
     env: { JAVISVN_MCP_TOKEN: token }
   }
 }

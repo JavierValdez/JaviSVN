@@ -105,7 +105,7 @@ npx tsc -p tsconfig.web.json --noEmit
 npx tsc -p tsconfig.node.json --noEmit
 ```
 
-> `ELECTRON_RUN_AS_NODE` no debe estar seteado al iniciar la app. `./start.sh` y los scripts del proyecto lo limpian.
+> `ELECTRON_RUN_AS_NODE` no debe estar seteado al iniciar la app. `./start.sh`, los scripts del proyecto y la configuración MCP generada lo limpian antes de arrancar JaviSVN.
 
 ---
 

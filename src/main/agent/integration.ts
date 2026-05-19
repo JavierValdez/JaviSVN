@@ -404,11 +404,12 @@ export function getAgentClientConfig(): {
     platform: process.platform,
     execPath: process.execPath,
     launchArgs,
-    comSpec: process.env.ComSpec
+    comSpec: process.env.ComSpec,
+    stdioEnvKey: 'JAVISVN_MCP_STDIO'
   })
 
   return {
     ...launchConfig,
-    env: { JAVISVN_MCP_TOKEN: token }
+    env: { JAVISVN_MCP_TOKEN: token, JAVISVN_MCP_STDIO: '1' }
   }
 }

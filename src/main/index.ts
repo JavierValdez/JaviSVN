@@ -65,7 +65,7 @@ const xml2js = _require('xml2js') as any
 const parseStringPromise = xml2js.parseStringPromise
 
 const isDev = process.env.NODE_ENV === 'development'
-const isMcpStdioMode = process.argv.includes('--mcp-stdio') || process.env.JAVISVN_MCP_STDIO === '1';
+const isMcpStdioMode = process.argv.includes('--mcp-stdio') || process.env.JAVISVN_MCP_STDIO === '1' || !!process.env.JAVISVN_MCP_TOKEN;
 
 // Set app name before ready so it shows correctly in the dock and menu bar
 app.name = 'JaviSVN'

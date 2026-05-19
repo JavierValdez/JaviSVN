@@ -22,14 +22,27 @@ export function buildAgentClientLaunchConfig(input: {
   }
 
   if (input.platform === 'win32') {
-    // On Windows, use env var instead of CLI flag for MCP stdio mode.
-    // This avoids cmd.exe quoting hell and Electron argument parsing issues.
-    const setEnv = input.stdioEnvKey
-      ? `set "ELECTRON_RUN_AS_NODE=" && set "${input.stdioEnvKey}=1" && ${quoteCmdArg(input.execPath)}`
-      : `set "ELECTRON_RUN_AS_NODE=" && ${quoteCmdArg(input.execPath)} ${input.launchArgs.map(quoteCmdArg).join(' ')}`;
+    // On Windows, when stdioEnvKey is set, launch the exe directly with env vars.
+    // This avoids cmd.exe quoting hell, parser corruption from JSON backslash
+    // escaping, and the ELECTRON_RUN_AS_NODE orphan problem.
+    // The env vars (MCP_STDIO=1, MCP_TOKEN, etc.) are passed via the
+    // mcp.json "env" section, not via cmd.exe set commands.
+    if (input.stdioEnvKey) {
+      return {
+        command: input.execPath,
+        args: []
+      }
+    }
+    // Legacy: without stdioEnvKey, use cmd.exe wrapper with --mcp-stdio flag
+    const commandLine = [
+      'set "ELECTRON_RUN_AS_NODE="',
+      '&&',
+      quoteCmdArg(input.execPath),
+      ...input.launchArgs.map(quoteCmdArg)
+    ].join(' ')
     return {
       command: input.comSpec || 'cmd.exe',
-      args: ['/d', '/s', '/c', setEnv]
+      args: ['/d', '/s', '/c', commandLine]
     }
   }
 

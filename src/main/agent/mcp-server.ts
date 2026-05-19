@@ -90,11 +90,5 @@ export async function runMcpServerMode(): Promise<void> {
   broker.onClose(() => {
     void shutdown(1, 'broker connection closed')
   })
-  process.stdin.once('end', () => {
-    void shutdown(0, 'stdin ended')
-  })
-  process.stdin.once('close', () => {
-    void shutdown(0, 'stdin closed')
-  })
   logMcp('stdio server ready')
 }

@@ -15,12 +15,9 @@ export function buildAgentClientLaunchConfig(input: {
   stdioEnvKey?: string
 }): AgentClientLaunchConfig {
   if (input.platform === 'darwin') {
-    const envArgs = input.stdioEnvKey
-      ? ['-u', 'ELECTRON_RUN_AS_NODE', input.execPath, ...input.launchArgs]
-      : ['-u', 'ELECTRON_RUN_AS_NODE', input.execPath, ...input.launchArgs];
     return {
       command: '/usr/bin/env',
-      args: envArgs
+      args: ['-u', 'ELECTRON_RUN_AS_NODE', input.execPath, ...input.launchArgs]
     }
   }
 

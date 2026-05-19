@@ -671,6 +671,7 @@ if (isMcpStdioMode) {
 
 app.on('window-all-closed', () => {
   cleanupPreviewTempDirs()
+  if (isMcpStdioMode) return
   if (process.platform !== 'darwin') app.quit()
 })
 

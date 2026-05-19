@@ -410,6 +410,6 @@ export function getAgentClientConfig(): {
 
   return {
     ...launchConfig,
-    env: { JAVISVN_MCP_TOKEN: token, JAVISVN_MCP_STDIO: '1' }
+    env: { JAVISVN_MCP_TOKEN: token, JAVISVN_MCP_STDIO: '1', ELECTRON_RUN_AS_NODE: '' }
   }
 }

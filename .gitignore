@@ -1,6 +1,7 @@
 node_modules/
 out/
 dist/
+dist-mcp-bridge/
 *.tsbuildinfo
 .DS_Store
 

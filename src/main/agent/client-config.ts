@@ -1,3 +1,5 @@
+import { dirname, join } from 'node:path'
+
 export interface AgentClientLaunchConfig {
   command: string
   args: string[]
@@ -13,6 +15,12 @@ export function buildAgentClientLaunchConfig(input: {
   launchArgs: string[]
   comSpec?: string
   stdioEnvKey?: string
+  // Windows-only: nombre del binario CONSOLE shipeado al lado del execPath
+  // (p.ej. "JaviSvnMcp.exe"). Cuando se pasa, en Windows se invoca este
+  // binario en lugar del exe Electron GUI principal. En macOS no se usa.
+  mcpBridgeExeName?: string
+  // Override para tests: ruta absoluta al binario bridge.
+  mcpBridgeExePath?: string
 }): AgentClientLaunchConfig {
   if (input.platform === 'darwin') {
     return {
@@ -22,18 +30,36 @@ export function buildAgentClientLaunchConfig(input: {
   }
 
   if (input.platform === 'win32') {
-    // On Windows, when stdioEnvKey is set, launch the exe directly with env vars.
-    // This avoids cmd.exe quoting hell, parser corruption from JSON backslash
-    // escaping, and the ELECTRON_RUN_AS_NODE orphan problem.
-    // The env vars (MCP_STDIO=1, MCP_TOKEN, etc.) are passed via the
-    // mcp.json "env" section, not via cmd.exe set commands.
+    // Preferencia 1: usar el bridge MCP standalone (CONSOLE subsystem).
+    // Esto evita los dos bugs de Windows del exe Electron GUI:
+    //   a) ELECTRON_RUN_AS_NODE heredado del cliente MCP no se puede borrar
+    //      desde mcp.json (env "" deja la variable definida-pero-vacia y
+    //      Electron la trata como activa).
+    //   b) WINDOWS_GUI subsystem no propaga stdin/stdout funcionalmente al
+    //      cliente que invoca al binario.
+    // El bridge standalone es node SEA con CONSOLE subsystem y reusa el
+    // protocolo del broker via named pipe (la app GUI sigue siendo la que
+    // expone el broker). El binario GUI principal NO cambia.
+    const bridgePath = input.mcpBridgeExePath
+      ?? (input.mcpBridgeExeName
+        ? join(dirname(input.execPath), input.mcpBridgeExeName)
+        : undefined)
+    if (bridgePath) {
+      return {
+        command: bridgePath,
+        args: []
+      }
+    }
+
+    // Preferencia 2 (fallback): lanzar el exe Electron directamente con env
+    // vars. Solo funciona en clientes MCP que no hereden ELECTRON_RUN_AS_NODE.
     if (input.stdioEnvKey) {
       return {
         command: input.execPath,
         args: []
       }
     }
-    // Legacy: without stdioEnvKey, use cmd.exe wrapper with --mcp-stdio flag
+    // Legacy: sin stdioEnvKey, usar cmd.exe wrapper con --mcp-stdio.
     const commandLine = [
       'set "ELECTRON_RUN_AS_NODE="',
       '&&',

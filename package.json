@@ -1,12 +1,14 @@
 {
   "name": "javisvn",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "SVN Desktop Client - Cliente SVN estilo GitHub Desktop",
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "node scripts/run-electron-vite.mjs dev",
-    "build": "node scripts/bundle-svn.mjs && electron-vite build",
+    "build:mcp-bridge": "node scripts/build-mcp-bridge.mjs --sea",
+    "build:mcp-bridge:bundle": "node scripts/build-mcp-bridge.mjs",
+    "build": "node scripts/bundle-svn.mjs && electron-vite build && npm run build:mcp-bridge",
     "start": "node scripts/run-electron-vite.mjs preview",
     "test": "tsx --test tests/**/*.test.ts",
     "pack": "npm run build && electron-builder --dir",
@@ -34,6 +36,7 @@
     "electron": "^32.0.0",
     "electron-builder": "^24.13.0",
     "electron-vite": "^5.0.0",
+    "postject": "^1.0.0-alpha.6",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "tsx": "^4.22.1",
@@ -49,7 +52,13 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "resources/icon.ico"
+      "icon": "resources/icon.ico",
+      "extraFiles": [
+        {
+          "from": "dist-mcp-bridge/JaviSvnMcp.exe",
+          "to": "JaviSvnMcp.exe"
+        }
+      ]
     },
     "nsis": {
       "oneClick": true,

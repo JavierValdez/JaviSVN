@@ -405,7 +405,12 @@ export function getAgentClientConfig(): {
     execPath: process.execPath,
     launchArgs,
     comSpec: process.env.ComSpec,
-    stdioEnvKey: 'JAVISVN_MCP_STDIO'
+    stdioEnvKey: 'JAVISVN_MCP_STDIO',
+    // Windows-only: cuando esta empaquetada, el instalador NSIS coloca este
+    // binario al lado de JaviSVN.exe (extraFiles en electron-builder).
+    // En dev (no empaquetada) no existe; el builder ignora el bridge y cae al
+    // fallback de lanzar el exe directo.
+    mcpBridgeExeName: app.isPackaged && process.platform === 'win32' ? 'JaviSvnMcp.exe' : undefined
   })
 
   return {

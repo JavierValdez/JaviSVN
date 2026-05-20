@@ -1168,10 +1168,20 @@ ipcMain.handle('svn:restorePathAtRevision', async (
 
 // ─── IPC: SVN Commit ─────────────────────────────────────────────────────────
 ipcMain.handle('svn:commit', async (_e, repoPath: string, files: string[], message: string) => {
-  // Add unversioned files first
+  // Normalize the working-copy state before committing selected paths.
   const statusResult = await runSvn(['status', '--xml'], { cwd: repoPath })
   const parsed = await parseXml(statusResult.stdout)
   const target = parsed.status?.target
+
+  const normalizeStatusPath = (entryPath: string): string => {
+    const raw = String(entryPath || '.').replace(/\\/g, '/').trim()
+    if (!raw || raw === '.') return '.'
+    if (isAbsolute(raw)) {
+      const rel = relative(resolve(repoPath), raw).replace(/\\/g, '/')
+      return toRepoRelativeArg(rel)
+    }
+    return toRepoRelativeArg(raw)
+  }
 
   const normalizePathKey = (inputPath: string): string => {
     const normalized = String(inputPath || '').replace(/\\/g, '/').trim()
@@ -1183,16 +1193,23 @@ ipcMain.handle('svn:commit', async (_e, repoPath: string, files: string[], messa
   selected.forEach((f) => selectedKeyToOriginal.set(normalizePathKey(f), f))
 
   const statusByPathKey = new Map<string, string>()
-  const pathKeyToPath = new Map<string, string>()
   if (target?.entry) {
     const entries = Array.isArray(target.entry) ? target.entry : [target.entry]
     for (const e of entries) {
       const item = String(e['wc-status']?.$?.item || '')
-      const p = String(e.$?.path || '')
+      const p = normalizeStatusPath(String(e.$?.path || ''))
       if (!p) continue
       const key = normalizePathKey(p)
       statusByPathKey.set(key, item)
-      pathKeyToPath.set(key, p)
+    }
+
+    const missingToDelete = selected.filter((selectedPath) => {
+      const key = normalizePathKey(selectedPath)
+      return statusByPathKey.get(key) === 'missing'
+    })
+
+    if (missingToDelete.length > 0) {
+      await runSvn(['delete', '--force', ...missingToDelete], { cwd: repoPath })
     }
 
     const toAddSet = new Set<string>()
@@ -1233,7 +1250,7 @@ ipcMain.handle('svn:commit', async (_e, repoPath: string, files: string[], messa
       const entriesAfter = Array.isArray(targetAfterAdd.entry) ? targetAfterAdd.entry : [targetAfterAdd.entry]
       for (const e of entriesAfter) {
         const item = String(e['wc-status']?.$?.item || '')
-        const p = String(e.$?.path || '')
+        const p = normalizeStatusPath(String(e.$?.path || ''))
         if (!p) continue
         const key = normalizePathKey(p)
         statusAfterByPathKey.set(key, item)

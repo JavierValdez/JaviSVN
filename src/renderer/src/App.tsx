@@ -802,7 +802,7 @@ export default function App() {
             <span className="toast-icon">
               {t.type === 'success' ? '✓' : t.type === 'error' ? '✕' : 'ℹ'}
             </span>
-            {t.message}
+            <span className="toast-message">{t.message}</span>
           </div>
         ))}
       </div>

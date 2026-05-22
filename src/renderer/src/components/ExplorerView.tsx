@@ -24,6 +24,11 @@ interface CheckoutState {
   done: boolean
 }
 
+interface CheckoutResult {
+  skippedInvalidCount?: number
+  skippedInvalidPaths?: string[]
+}
+
 interface ExportState {
   url: string
   targetDir: string
@@ -584,9 +589,25 @@ export default function ExplorerView({
       unsub = svn.onCheckoutProgress((msg: string) => {
         setCheckout((prev) => prev ? { ...prev, log: prev.log + msg } : null)
       })
-      await svn.checkout(checkout.url, checkoutName)
+      const result = await svn.checkout(checkout.url, checkoutName) as CheckoutResult
+      const skippedInvalidCount = Number(result?.skippedInvalidCount || 0)
+      if (skippedInvalidCount > 0) {
+        const skippedPreview = result.skippedInvalidPaths?.slice(0, 3).join('\n') || ''
+        setCheckout((prev) => prev
+          ? {
+            ...prev,
+            log: `${prev.log}\nClonación parcial: ${skippedInvalidCount} entradas omitidas por nombres no válidos en este sistema.${skippedPreview ? `\n${skippedPreview}` : ''}`
+          }
+          : null
+        )
+      }
       setCheckout((prev) => prev ? { ...prev, running: false, done: true } : null)
-      toast('Repositorio clonado correctamente', 'success')
+      toast(
+        skippedInvalidCount > 0
+          ? `Clonado parcial: ${skippedInvalidCount} entradas omitidas por nombres no válidos`
+          : 'Repositorio clonado correctamente',
+        skippedInvalidCount > 0 ? 'info' : 'success'
+      )
       onCheckoutDone()
       // Refresh tree to show updated isCheckedOut status
       setTimeout(() => {

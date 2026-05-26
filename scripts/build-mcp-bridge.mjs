@@ -1,12 +1,13 @@
-// Build del bridge MCP standalone para Windows.
+// Build del bridge MCP standalone cross-plataforma.
 //
 // Pipeline:
 //   1. esbuild bundle  -> dist-mcp-bridge/bridge.cjs (todas las deps inline)
-//   2. Si --sea, crear binario standalone con Node SEA (Single Executable Apps).
+//   2. Si --sea en Windows, crear binario standalone con Node SEA.
 //      Resultado: dist-mcp-bridge/JaviSvnMcp.exe (CONSOLE subsystem).
+//   3. En macOS/Linux, generar launcher script que envuelve bridge.cjs con node.
 //
-// El .exe resultante es lo que el instalador de Windows shipea. La app GUI
-// (JaviSVN.exe) NO cambia.
+// El binario/script resultante es lo que el instalador shipea. La app GUI
+// (JaviSVN) NO cambia.
 
 import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -25,6 +26,8 @@ const SEA_BLOB_PATH = resolve(OUT_DIR, 'sea-prep.blob')
 const SEA_CONFIG_PATH = resolve(OUT_DIR, 'sea-config.json')
 const EXE_NAME = 'JaviSvnMcp.exe'
 const EXE_PATH = resolve(OUT_DIR, EXE_NAME)
+const LAUNCHER_NAME = 'javisvn-mcp-bridge'
+const LAUNCHER_PATH = resolve(OUT_DIR, LAUNCHER_NAME)
 
 const args = new Set(process.argv.slice(2))
 const buildSea = args.has('--sea')
@@ -55,6 +58,22 @@ async function bundle() {
   })
 
   console.log(`[bundle] OK -> ${BUNDLE_PATH}`)
+}
+
+function writeLauncherScript() {
+  // En macOS y Linux generamos un script ejecutable que envuelve
+  // el bundle .cjs con node. La app GUI NO incluye node, así que
+  // el usuario debe tenerlo en PATH. Si no, el wrapper falla con
+  // un mensaje claro.
+  const script = `#!/usr/bin/env bash
+if ! command -v node &> /dev/null; then
+  echo "[javisvn-mcp-bridge] ERROR: node no encontrado en PATH. Instala Node.js 20+." >&2
+  exit 1
+fi
+exec node "$(dirname "$0")/bridge.cjs" "$@"
+`
+  writeFileSync(LAUNCHER_PATH, script, { mode: 0o755 })
+  console.log(`[launcher] OK -> ${LAUNCHER_PATH}`)
 }
 
 function buildSeaExe() {
@@ -109,13 +128,14 @@ function buildSeaExe() {
 ;(async () => {
   await bundle()
   if (buildSea) {
-    if (process.platform !== 'win32') {
-      console.log('[sea] saltando: SEA solo se construye en Windows.')
+    if (process.platform === 'win32') {
+      buildSeaExe()
       return
     }
-    buildSeaExe()
+    // macOS/Linux: generar launcher script en vez de SEA .exe
+    writeLauncherScript()
   } else {
-    console.log('[sea] saltando: pasa --sea para empaquetar como .exe.')
+    console.log('[sea] saltando: pasa --sea para empaquetar.')
   }
 })().catch((error) => {
   console.error(error)

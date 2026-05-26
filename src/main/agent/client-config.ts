@@ -23,6 +23,15 @@ export function buildAgentClientLaunchConfig(input: {
   mcpBridgeExePath?: string
 }): AgentClientLaunchConfig {
   if (input.platform === 'darwin') {
+    // Preferencia 1: usar el bridge MCP standalone si está disponible
+    // (empaquetado dentro de Resources/bridge/ en macOS).
+    if (input.mcpBridgeExePath) {
+      return {
+        command: input.mcpBridgeExePath,
+        args: []
+      }
+    }
+    // Fallback: lanzar el binario Electron con env vars.
     return {
       command: '/usr/bin/env',
       args: ['-u', 'ELECTRON_RUN_AS_NODE', input.execPath, ...input.launchArgs]
@@ -69,6 +78,19 @@ export function buildAgentClientLaunchConfig(input: {
     return {
       command: input.comSpec || 'cmd.exe',
       args: ['/d', '/s', '/c', commandLine]
+    }
+  }
+
+  if (input.platform === 'linux') {
+    if (input.mcpBridgeExePath) {
+      return {
+        command: input.mcpBridgeExePath,
+        args: []
+      }
+    }
+    return {
+      command: input.execPath,
+      args: input.launchArgs
     }
   }
 

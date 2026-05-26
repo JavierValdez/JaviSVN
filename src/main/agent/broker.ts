@@ -1,6 +1,6 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { existsSync, rmSync } from 'node:fs'
-import { createServer, Socket, Server } from 'node:net'
+import { connect, createServer, Socket, Server } from 'node:net'
 import { AgentSession, BrokerHello, BrokerHelloResponse, BrokerProgress, BrokerRequest, BrokerResponse } from './protocol'
 
 export interface BrokerServerOptions {
@@ -28,6 +28,24 @@ function safeTokenEquals(left: string | null, right: string): boolean {
   return timingSafeEqual(leftBuffer, rightBuffer)
 }
 
+async function endpointAcceptsConnection(endpoint: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(endpoint)
+    let settled = false
+
+    const settle = (value: boolean) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(value)
+    }
+
+    socket.once('connect', () => settle(true))
+    socket.once('error', () => settle(false))
+    socket.setTimeout(250, () => settle(false))
+  })
+}
+
 export class AgentBrokerServer {
   private server: Server | null = null
   private readonly sessions = new Map<string, SessionConnection>()
@@ -37,6 +55,9 @@ export class AgentBrokerServer {
   async start(): Promise<void> {
     if (this.server) return
     if (process.platform !== 'win32' && existsSync(this.options.endpoint)) {
+      if (await endpointAcceptsConnection(this.options.endpoint)) {
+        throw new Error('Ya existe un broker MCP activo en este endpoint.')
+      }
       rmSync(this.options.endpoint, { force: true })
     }
 

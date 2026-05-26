@@ -1,5 +1,7 @@
 import { app, BrowserWindow, dialog } from 'electron'
 import type { MessageBoxOptions } from 'electron'
+import { Buffer } from 'node:buffer'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureAgentIntegrationToken, getAgentIntegrationState, regenerateAgentIntegrationToken, setAgentIntegrationEnabled } from '../services/store'
 import {
@@ -38,8 +40,11 @@ export interface AgentIntegrationPublicState {
 }
 
 export function getAgentBrokerEndpoint(): string {
-  if (process.platform === 'win32') return '\\\\.\\pipe\\javisvn-agent-broker'
-  return join(app.getPath('userData'), 'javisvn-agent-broker.sock')
+  if (process.platform === 'win32') return '\\\\\\\\.\\\\pipe\\\\javisvn-agent-broker'
+  const preferred = join(app.getPath('userData'), 'javisvn-agent-broker.sock')
+  // macOS limita sun_path a 104 bytes, Linux a 108. Si nos pasamos, usar /tmp.
+  if (Buffer.byteLength(preferred, 'utf-8') <= 100) return preferred
+  return join(tmpdir(), `javisvn-agent-broker-${process.getuid?.() ?? 'u'}.sock`)
 }
 
 let activityLog: AgentActivityLog | null = null
@@ -400,17 +405,24 @@ export function getAgentClientConfig(): {
 } {
   const token = ensureAgentIntegrationToken()
   const launchArgs = app.isPackaged ? ['--mcp-stdio'] : [app.getAppPath(), '--mcp-stdio']
+
+  // Resolver ruta al bridge MCP standalone en macOS/Linux empaquetado.
+  const mcpBridgeExePath = (() => {
+    if (!app.isPackaged) return undefined
+    if (process.platform === 'darwin' || process.platform === 'linux') {
+      return join(process.resourcesPath, 'bridge', 'javisvn-mcp-bridge')
+    }
+    return undefined
+  })()
+
   const launchConfig = buildAgentClientLaunchConfig({
     platform: process.platform,
     execPath: process.execPath,
     launchArgs,
     comSpec: process.env.ComSpec,
     stdioEnvKey: 'JAVISVN_MCP_STDIO',
-    // Windows-only: cuando esta empaquetada, el instalador NSIS coloca este
-    // binario al lado de JaviSVN.exe (extraFiles en electron-builder).
-    // En dev (no empaquetada) no existe; el builder ignora el bridge y cae al
-    // fallback de lanzar el exe directo.
-    mcpBridgeExeName: app.isPackaged && process.platform === 'win32' ? 'JaviSvnMcp.exe' : undefined
+    mcpBridgeExeName: app.isPackaged && process.platform === 'win32' ? 'JaviSvnMcp.exe' : undefined,
+    mcpBridgeExePath
   })
 
   return {

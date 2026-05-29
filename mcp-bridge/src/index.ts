@@ -9,6 +9,7 @@ import path from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { AgentBrokerClient } from '../../src/main/agent/broker-client'
+import { resolveAgentBrokerEndpoint } from '../../src/main/agent/endpoint'
 import { registerResources, registerTools } from '../../src/main/agent/mcp-surface'
 
 const SERVER_NAME = 'javisvn'
@@ -17,13 +18,17 @@ const DEBUG_ENV = 'JAVISVN_MCP_DEBUG'
 const VERSION = process.env.JAVISVN_BRIDGE_VERSION || '0.0.0'
 
 function resolveBrokerEndpoint(): string {
-  if (process.platform === 'win32') return '\\\\\\\\.\\\\pipe\\\\javisvn-agent-broker'
+  if (process.platform === 'win32') {
+    return resolveAgentBrokerEndpoint({ platform: process.platform, userDataPath: '' })
+  }
   const userData = process.platform === 'darwin'
     ? path.join(os.homedir(), 'Library', 'Application Support', 'javisvn')
     : path.join(process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'), 'javisvn')
-  const preferred = path.join(userData, 'javisvn-agent-broker.sock')
-  if (Buffer.byteLength(preferred, 'utf-8') <= 100) return preferred
-  return path.join(os.tmpdir(), `javisvn-agent-broker-${process.getuid?.() ?? 'u'}.sock`)
+  return resolveAgentBrokerEndpoint({
+    platform: process.platform,
+    userDataPath: userData,
+    tempDir: os.tmpdir()
+  })
 }
 
 const PIPE_ENDPOINT = resolveBrokerEndpoint()

@@ -1,7 +1,5 @@
 import { app, BrowserWindow, dialog } from 'electron'
 import type { MessageBoxOptions } from 'electron'
-import { Buffer } from 'node:buffer'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureAgentIntegrationToken, getAgentIntegrationState, regenerateAgentIntegrationToken, setAgentIntegrationEnabled } from '../services/store'
 import {
@@ -29,6 +27,7 @@ import { updateLocalRepo } from '../services/update'
 import { buildAgentClientLaunchConfig } from './client-config'
 import { AgentActivityLog } from './activity-log'
 import { AgentBrokerServer } from './broker'
+import { resolveAgentBrokerEndpoint } from './endpoint'
 import { AgentActivityEntry, AgentSession, BrokerRequest, createActivityEntry } from './protocol'
 import { sanitizeLocalRepo, sanitizeRemoteEntry } from './sanitize'
 
@@ -40,11 +39,10 @@ export interface AgentIntegrationPublicState {
 }
 
 export function getAgentBrokerEndpoint(): string {
-  if (process.platform === 'win32') return '\\\\\\\\.\\\\pipe\\\\javisvn-agent-broker'
-  const preferred = join(app.getPath('userData'), 'javisvn-agent-broker.sock')
-  // macOS limita sun_path a 104 bytes, Linux a 108. Si nos pasamos, usar /tmp.
-  if (Buffer.byteLength(preferred, 'utf-8') <= 100) return preferred
-  return join(tmpdir(), `javisvn-agent-broker-${process.getuid?.() ?? 'u'}.sock`)
+  return resolveAgentBrokerEndpoint({
+    platform: process.platform,
+    userDataPath: process.platform === 'win32' ? '' : app.getPath('userData')
+  })
 }
 
 let activityLog: AgentActivityLog | null = null

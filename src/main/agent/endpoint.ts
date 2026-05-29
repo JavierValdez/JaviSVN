@@ -1,0 +1,23 @@
+import { Buffer } from 'node:buffer'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const BROKER_NAME = 'javisvn-agent-broker'
+const MAX_UNIX_SOCKET_PATH_BYTES = 100
+
+// Runtime path must be \\.\pipe\javisvn-agent-broker; over-escaping breaks listen() on Windows.
+export const WINDOWS_AGENT_BROKER_ENDPOINT = String.raw`\\.\pipe\javisvn-agent-broker`
+
+export function resolveAgentBrokerEndpoint(input: {
+  platform: NodeJS.Platform
+  userDataPath: string
+  tempDir?: string
+  uid?: number | string
+}): string {
+  if (input.platform === 'win32') return WINDOWS_AGENT_BROKER_ENDPOINT
+
+  const preferred = join(input.userDataPath, `${BROKER_NAME}.sock`)
+  if (Buffer.byteLength(preferred, 'utf-8') <= MAX_UNIX_SOCKET_PATH_BYTES) return preferred
+
+  return join(input.tempDir ?? tmpdir(), `${BROKER_NAME}-${input.uid ?? process.getuid?.() ?? 'u'}.sock`)
+}

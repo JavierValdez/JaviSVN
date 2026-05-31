@@ -23,6 +23,8 @@ export interface AppUpdateState {
   releaseDate: string | null
   releaseNotes: string | null
   downloadUrl: string | null
+  downloadFileName: string | null
+  downloadedInstallerPath: string | null
   error: string | null
 }
 
@@ -97,10 +99,10 @@ declare global {
       onAppUpdateState: (cb: (state: AppUpdateState) => void) => () => void
     }
     appUpdate: {
-      getState: () => Promise<{ stage: string; latestVersion?: string; downloadUrl?: string }>
-      check: () => Promise<void>
-      download: () => Promise<void>
-      onState: (cb: (state: { stage: string; latestVersion?: string; downloadUrl?: string }) => void) => () => void
+      getState: () => Promise<AppUpdateState>
+      check: () => Promise<AppUpdateState>
+      download: () => Promise<AppUpdateState>
+      onState: (cb: (state: AppUpdateState) => void) => () => void
     }
     agentIntegration: {
       getState: () => Promise<AgentIntegrationState>
@@ -117,6 +119,26 @@ declare global {
 
 interface Toast { id: number; message: string; type: 'success' | 'error' | 'info' }
 const DEFAULT_SERVER_URL = ''
+
+function getAppUpdateBannerText(state: AppUpdateState): string {
+  if (state.stage === 'downloading') {
+    return state.progressPercent !== null
+      ? `Descargando actualización ${state.progressPercent}%`
+      : 'Descargando actualización...'
+  }
+
+  if (state.stage === 'downloaded') {
+    return `Instalador listo en Descargas: ${state.downloadFileName || `JaviSVN ${state.downloadedVersion || state.latestVersion || ''}`}`
+  }
+
+  return `Nueva versión ${state.latestVersion} disponible`
+}
+
+function getAppUpdateActionLabel(state: AppUpdateState): string {
+  if (state.stage === 'downloading') return state.progressPercent !== null ? `${state.progressPercent}%` : 'Descargando'
+  if (state.stage === 'downloaded') return 'Mostrar'
+  return 'Descargar'
+}
 
 function buildChangesSignature(changes: FileChange[]): string {
   return changes
@@ -286,6 +308,29 @@ export default function App() {
     const remotes = await window.svn.listRemotes()
     setRemoteServers(remotes)
     setActiveRemoteId(remotes.find((r) => r.active)?.id || null)
+  }
+
+  const handleAppUpdateDownload = async () => {
+    try {
+      const wasDownloaded = appUpdateState?.stage === 'downloaded'
+      const nextState = await window.svn.downloadUpdate()
+      setAppUpdateState(nextState)
+      if (nextState.stage === 'downloaded' && !wasDownloaded) {
+        toast('Instalador descargado en Descargas', 'success')
+      } else if (nextState.stage === 'error') {
+        toast(nextState.error || 'No se pudo descargar la actualización', 'error')
+      }
+    } catch (err: any) {
+      toast(err.message || 'No se pudo descargar la actualización', 'error')
+    }
+  }
+
+  const handleAppUpdateCheck = async () => {
+    try {
+      setAppUpdateState(await window.svn.checkForUpdates())
+    } catch (err: any) {
+      toast(err.message || 'No se pudo buscar actualizaciones', 'error')
+    }
   }
 
   const handleUpdate = async () => {
@@ -553,13 +598,23 @@ export default function App() {
   return (
     <div className="app">
       {/* App update banner */}
-      {appUpdateState?.stage === 'available' && (
-        <div className="update-banner">
-          <span>🎉 Nueva versión {appUpdateState.latestVersion} disponible</span>
-          <button className="btn btn-primary" style={{ padding: '2px 12px', fontSize: 12 }} onClick={() => window.appUpdate.download()}>
-            Descargar
+      {appUpdateState && ['available', 'downloading', 'downloaded'].includes(appUpdateState.stage) && (
+        <div className={`update-banner update-banner-${appUpdateState.stage}`}>
+          <span>{getAppUpdateBannerText(appUpdateState)}</span>
+          <button
+            className="btn btn-primary"
+            style={{ padding: '2px 12px', fontSize: 12 }}
+            onClick={handleAppUpdateDownload}
+            disabled={appUpdateState.stage === 'downloading'}
+          >
+            {getAppUpdateActionLabel(appUpdateState)}
           </button>
-          <button className="btn btn-default" style={{ padding: '2px 8px', fontSize: 12 }} onClick={() => setAppUpdateState(null)}>
+          <button
+            className="btn btn-default"
+            style={{ padding: '2px 8px', fontSize: 12 }}
+            onClick={() => setAppUpdateState(null)}
+            disabled={appUpdateState.stage === 'downloading'}
+          >
             ✕
           </button>
         </div>
@@ -581,17 +636,33 @@ export default function App() {
               {appUpdateState.stage === 'available' ? (
                 <button
                   className="titlebar-update-chip titlebar-update-chip-new"
-                  onClick={() => window.svn.downloadUpdate().then(setAppUpdateState).catch(() => {})}
-                  title={`v${appUpdateState.latestVersion} disponible — clic para descargar`}
+                  onClick={handleAppUpdateDownload}
+                  title={`v${appUpdateState.latestVersion} disponible - clic para descargar`}
                 >
-                  🆕
+                  ↓
+                </button>
+              ) : appUpdateState.stage === 'downloading' ? (
+                <button
+                  className="titlebar-update-chip titlebar-update-chip-downloading"
+                  disabled
+                  title="Descargando actualización"
+                >
+                  {appUpdateState.progressPercent !== null ? `${appUpdateState.progressPercent}%` : '...'}
+                </button>
+              ) : appUpdateState.stage === 'downloaded' ? (
+                <button
+                  className="titlebar-update-chip titlebar-update-chip-downloaded"
+                  onClick={handleAppUpdateDownload}
+                  title="Mostrar instalador descargado"
+                >
+                  ✓
                 </button>
               ) : appUpdateState.stage === 'checking' ? (
                 <span className="spinner" style={{ width: 10, height: 10, flexShrink: 0 }} />
               ) : (
                 <button
                   className="titlebar-update-chip"
-                  onClick={() => window.svn.checkForUpdates().then(setAppUpdateState).catch(() => {})}
+                  onClick={handleAppUpdateCheck}
                   title={appUpdateState.stage === 'error' ? `Error: ${appUpdateState.error}` : 'Buscar actualizaciones'}
                 >
                   {appUpdateState.stage === 'error' ? '⚠️' : '↑'}

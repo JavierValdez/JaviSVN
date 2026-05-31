@@ -1,5 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { createWriteStream, promises as fs } from 'node:fs'
 import { get } from 'node:https'
+import path from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web'
 
 type UpdateStage =
   | 'idle'
@@ -26,12 +31,15 @@ export interface AppUpdateState {
   releaseDate: string | null
   releaseNotes: string | null
   downloadUrl: string | null
+  downloadFileName: string | null
+  downloadedInstallerPath: string | null
   error: string | null
 }
 
 interface GithubReleaseAsset {
   name: string
   browser_download_url: string
+  size?: number
 }
 
 interface GithubRelease {
@@ -43,8 +51,16 @@ interface GithubRelease {
   assets?: GithubReleaseAsset[]
 }
 
+interface UpdateDownloadAsset {
+  name: string
+  url: string
+  size: number | null
+}
+
 let updaterInitialized = false
 let checkInFlight: Promise<void> | null = null
+let downloadInFlight: Promise<AppUpdateState> | null = null
+let latestDownloadAsset: UpdateDownloadAsset | null = null
 
 const UPDATE_OWNER = process.env.JAVISVN_UPDATE_OWNER || 'JavierValdez'
 const UPDATE_REPO = process.env.JAVISVN_UPDATE_REPO || 'JaviSVN'
@@ -65,6 +81,8 @@ const updateState: AppUpdateState = {
   releaseDate: null,
   releaseNotes: null,
   downloadUrl: null,
+  downloadFileName: null,
+  downloadedInstallerPath: null,
   error: null
 }
 
@@ -101,7 +119,9 @@ function markUnsupported(reason: string): void {
     autoUpdatesEnabled: false,
     mode: 'unsupported',
     error: reason,
-    progressPercent: null
+    progressPercent: null,
+    downloadFileName: null,
+    downloadedInstallerPath: null
   })
 }
 
@@ -136,7 +156,7 @@ function compareVersions(a: string, b: string): number {
   return 0
 }
 
-function pickDownloadUrl(release: GithubRelease): string | null {
+function pickDownloadAsset(release: GithubRelease): UpdateDownloadAsset | null {
   const assets = Array.isArray(release.assets) ? release.assets : []
   if (assets.length > 0) {
     const platformPriority = process.platform === 'darwin'
@@ -147,12 +167,101 @@ function pickDownloadUrl(release: GithubRelease): string | null {
 
     for (const ext of platformPriority) {
       const found = assets.find((a) => a?.name?.toLowerCase().endsWith(ext.toLowerCase()))
-      if (found?.browser_download_url) return found.browser_download_url
+      if (found?.browser_download_url) {
+        return {
+          name: found.name,
+          url: found.browser_download_url,
+          size: typeof found.size === 'number' ? found.size : null
+        }
+      }
     }
-    if (assets[0]?.browser_download_url) return assets[0].browser_download_url
+
+    const fallback = assets.find((a) => a?.name && a?.browser_download_url)
+    if (fallback) {
+      return {
+        name: fallback.name,
+        url: fallback.browser_download_url,
+        size: typeof fallback.size === 'number' ? fallback.size : null
+      }
+    }
   }
 
-  return release.html_url || RELEASES_PAGE
+  return null
+}
+
+function getDownloadTargetPath(asset: UpdateDownloadAsset): string {
+  return path.join(app.getPath('downloads'), path.basename(asset.name))
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function syncExistingDownload(version: string, asset: UpdateDownloadAsset): Promise<boolean> {
+  const targetPath = getDownloadTargetPath(asset)
+
+  if (!(await fileExists(targetPath))) return false
+
+  if (typeof asset.size === 'number' && asset.size > 0) {
+    const stats = await fs.stat(targetPath)
+    if (stats.size !== asset.size) return false
+  }
+
+  patchState({
+    stage: 'downloaded',
+    mode: 'manual',
+    latestVersion: version,
+    downloadedVersion: version,
+    progressPercent: 100,
+    downloadUrl: asset.url,
+    downloadFileName: path.basename(targetPath),
+    downloadedInstallerPath: targetPath,
+    error: null
+  })
+  return true
+}
+
+function createDownloadProgressStream(totalBytes: number): Transform {
+  let receivedBytes = 0
+
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      receivedBytes += chunk.length
+      const progressPercent = totalBytes > 0
+        ? Math.min(99, Math.round((receivedBytes / totalBytes) * 100))
+        : null
+
+      patchState({
+        stage: 'downloading',
+        progressPercent,
+        error: null
+      })
+
+      callback(null, chunk)
+    }
+  })
+}
+
+async function revealDownloadedInstaller(): Promise<boolean> {
+  const installerPath = updateState.downloadedInstallerPath
+  if (!installerPath || !(await fileExists(installerPath))) {
+    patchState({
+      stage: latestDownloadAsset ? 'available' : 'idle',
+      downloadedVersion: null,
+      progressPercent: null,
+      downloadedInstallerPath: null,
+      error: 'No se encontró el instalador descargado. Puedes volver a descargarlo.'
+    })
+    return false
+  }
+
+  shell.showItemInFolder(installerPath)
+  return true
 }
 
 async function fetchLatestRelease(): Promise<GithubRelease> {
@@ -237,7 +346,35 @@ async function checkForUpdates(): Promise<AppUpdateState> {
     const latestVersion = normalizeVersion(latest.tag_name)
     const currentVersion = app.getVersion()
     const hasUpdate = compareVersions(latestVersion, currentVersion) > 0
-    const downloadUrl = pickDownloadUrl(latest)
+    const downloadAsset = pickDownloadAsset(latest)
+    latestDownloadAsset = hasUpdate ? downloadAsset : null
+
+    if (hasUpdate && !downloadAsset) {
+      patchState({
+        stage: 'error',
+        mode: 'manual',
+        latestVersion,
+        downloadedVersion: null,
+        progressPercent: null,
+        releaseName: latest.name || null,
+        releaseDate: latest.published_at || null,
+        releaseNotes: latest.body || null,
+        downloadUrl: latest.html_url || RELEASES_PAGE,
+        downloadFileName: null,
+        downloadedInstallerPath: null,
+        error: 'No se encontró un instalador compatible en el último release.'
+      })
+      return
+    }
+
+    if (hasUpdate && downloadAsset && await syncExistingDownload(latestVersion, downloadAsset)) {
+      patchState({
+        releaseName: latest.name || null,
+        releaseDate: latest.published_at || null,
+        releaseNotes: latest.body || null
+      })
+      return
+    }
 
     patchState({
       stage: hasUpdate ? 'available' : 'not-available',
@@ -248,7 +385,9 @@ async function checkForUpdates(): Promise<AppUpdateState> {
       releaseName: latest.name || null,
       releaseDate: latest.published_at || null,
       releaseNotes: latest.body || null,
-      downloadUrl,
+      downloadUrl: hasUpdate ? downloadAsset?.url || null : null,
+      downloadFileName: hasUpdate ? downloadAsset?.name || null : null,
+      downloadedInstallerPath: null,
       error: null
     })
   })()
@@ -270,31 +409,95 @@ async function checkForUpdates(): Promise<AppUpdateState> {
 
 async function downloadUpdate(): Promise<AppUpdateState> {
   if (!updateState.autoUpdatesEnabled) return { ...updateState }
-  if (updateState.stage !== 'available') {
+
+  if (downloadInFlight) return downloadInFlight
+
+  if (updateState.stage === 'downloaded') {
+    await revealDownloadedInstaller()
+    return { ...updateState }
+  }
+
+  if (!latestDownloadAsset || updateState.stage === 'idle' || updateState.stage === 'error') {
+    await checkForUpdates()
+  }
+
+  const stageAfterCheck = updateState.stage as UpdateStage
+
+  if (stageAfterCheck === 'downloaded') {
+    await revealDownloadedInstaller()
+    return { ...updateState }
+  }
+
+  if (stageAfterCheck !== 'available' || !latestDownloadAsset) {
     throw new Error('No hay una actualización disponible para descargar')
   }
 
-  const url = updateState.downloadUrl || RELEASES_PAGE
-  await shell.openExternal(url)
+  const asset = latestDownloadAsset
+  downloadInFlight = (async () => {
+    const targetPath = getDownloadTargetPath(asset)
+    const tempPath = `${targetPath}.download`
 
-  const ownerWindow = BrowserWindow.getFocusedWindow() || getOpenWindows()[0]
-  const { response } = await dialog.showMessageBox(ownerWindow ?? undefined, {
-    type: 'info',
-    title: 'Instalar actualización',
-    message: `JaviSVN ${updateState.latestVersion} está descargándose`,
-    detail:
-      'Cuando la descarga termine, cierra JaviSVN antes de abrir el instalador.\n\n' +
-      '¿Deseas salir ahora para instalar la actualización cuando se complete la descarga?',
-    buttons: ['Salir ahora', 'Instalar después'],
-    defaultId: 0,
-    cancelId: 1
-  })
+    patchState({
+      stage: 'downloading',
+      latestVersion: updateState.latestVersion,
+      downloadedVersion: null,
+      progressPercent: 0,
+      downloadUrl: asset.url,
+      downloadFileName: path.basename(targetPath),
+      downloadedInstallerPath: null,
+      error: null
+    })
 
-  if (response === 0) {
-    app.quit()
-  }
+    try {
+      const response = await fetch(asset.url, {
+        headers: {
+          Accept: 'application/octet-stream',
+          'User-Agent': `JaviSVN/${app.getVersion()}`
+        },
+        redirect: 'follow'
+      })
 
-  return { ...updateState }
+      if (!response.ok || !response.body) {
+        throw new Error(`La descarga falló con estado ${response.status}.`)
+      }
+
+      const contentLength = Number(response.headers.get('content-length') ?? asset.size ?? 0)
+      const totalBytes = Number.isFinite(contentLength) ? contentLength : 0
+
+      await pipeline(
+        Readable.fromWeb(response.body as unknown as NodeReadableStream<Uint8Array>),
+        createDownloadProgressStream(totalBytes),
+        createWriteStream(tempPath)
+      )
+
+      await fs.rm(targetPath, { force: true })
+      await fs.rename(tempPath, targetPath)
+
+      patchState({
+        stage: 'downloaded',
+        downloadedVersion: updateState.latestVersion,
+        progressPercent: 100,
+        downloadFileName: path.basename(targetPath),
+        downloadedInstallerPath: targetPath,
+        error: null
+      })
+    } catch (err) {
+      await fs.rm(tempPath, { force: true })
+      patchState({
+        stage: 'error',
+        progressPercent: null,
+        downloadedVersion: null,
+        downloadedInstallerPath: null,
+        error: formatError(err)
+      })
+    } finally {
+      downloadInFlight = null
+    }
+
+    return { ...updateState }
+  })()
+
+  return downloadInFlight
 }
 
 function registerIpc(): void {

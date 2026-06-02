@@ -13,7 +13,7 @@
     "test": "tsx --test tests/**/*.test.ts",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
-    "release": "npm run build && electron-builder --publish always"
+    "release": "npm run build"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.0",
@@ -49,6 +49,7 @@
     "mac": {
       "target": "dmg",
       "icon": "resources/icon.icns",
+      "artifactName": "${productName}-Mac-${version}-Installer.${ext}",
       "extraResources": [
         {
           "from": "dist-mcp-bridge/bridge.cjs",
@@ -63,6 +64,7 @@
     "win": {
       "target": "nsis",
       "icon": "resources/icon.ico",
+      "artifactName": "${productName}-Windows-${version}-Setup.${ext}",
       "extraFiles": [
         {
           "from": "dist-mcp-bridge/JaviSvnMcp.exe",
@@ -124,11 +126,11 @@
     "directories": {
       "output": "dist"
     },
-    "publish": {
-      "provider": "github",
-      "owner": "JavierValdez",
-      "repo": "JaviSVN",
-      "releaseType": "release"
-    }
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://storage.googleapis.com/artictools-releases/javisvn/releases"
+      }
+    ]
   }
 }
